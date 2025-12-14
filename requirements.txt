@@ -1,12 +1,27 @@
-einops
-matplotlib
-numpy
-pandas
-patool
-reformer-pytorch
-scikit-learn
-scipy
-sktime
-sympy
-torch
-tqdm
+# Updated for Python 3.12 and PyTorch 2.x compatibility
+# Core deep learning framework
+torch>=2.0.0,<3.0.0
+torchvision>=0.15.0
+
+# Tensor operations
+einops>=0.7.0
+
+# Scientific computing
+numpy>=1.24.0,<2.0.0
+scipy>=1.11.0
+sympy>=1.12
+
+# Data manipulation and visualization
+pandas>=2.0.0
+matplotlib>=3.7.0
+
+# Machine learning
+scikit-learn>=1.3.0
+sktime>=0.24.0
+
+# Utilities
+tqdm>=4.66.0
+patool>=2.0.0
+
+# Attention mechanisms
+reformer-pytorch>=1.4.4

@@ -25,7 +25,7 @@ Our ModernTCN achieves the consistent state-of-the-art performance on five mains
 ![Block Design](fig/fig_mainresult.png)
 ## Get Started
 
-1. Install Python 3.7 and necessary dependencies.
+1. Install Python 3.12+ and necessary dependencies.
 ```
 pip install -r requirements.txt
 ```
