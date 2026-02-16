@@ -25,3 +25,6 @@ patool>=2.0.0
 
 # Attention mechanisms
 reformer-pytorch>=1.4.4
+
+# Experiment tracking
+tensorboard>=2.14.0

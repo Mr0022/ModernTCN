@@ -192,6 +192,19 @@ class Exp_Main(Exp_Basic):
                                             epochs=self.args.train_epochs,
                                             max_lr=self.args.learning_rate)
 
+        writer = None
+        if getattr(self.args, 'use_tensorboard', False):
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+            except ModuleNotFoundError as exc:
+                raise ModuleNotFoundError(
+                    "TensorBoard logging requested but tensorboard is not installed. "
+                    "Install dependencies with `pip install -r requirements.txt` or `pip install tensorboard`."
+                ) from exc
+            log_dir = os.path.join(self.args.tensorboard_log_dir, setting)
+            writer = SummaryWriter(log_dir=log_dir)
+            writer.add_text('config', str(self.args))
+
         epoch_loss_history = []
         iter_loss_history = []
         global_iter = 0
@@ -255,6 +268,8 @@ class Exp_Main(Exp_Basic):
                     train_loss.append(loss.item())
 
                 iter_loss_history.append({'iter': global_iter, 'loss': loss.item()})
+                if writer is not None:
+                    writer.add_scalar('train/loss_iter', loss.item(), global_iter)
 
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
@@ -289,6 +304,12 @@ class Exp_Main(Exp_Basic):
                 'vali_loss': float(vali_loss),
                 'test_loss': float(test_loss),
             })
+            if writer is not None:
+                writer.add_scalar('train/loss_epoch', train_loss, epoch + 1)
+                writer.add_scalar('val/loss_epoch', vali_loss, epoch + 1)
+                writer.add_scalar('test/loss_epoch', test_loss, epoch + 1)
+                current_lr = model_optim.param_groups[0]['lr']
+                writer.add_scalar('train/learning_rate', current_lr, epoch + 1)
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
@@ -302,6 +323,9 @@ class Exp_Main(Exp_Basic):
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         self._save_training_plots(setting, epoch_loss_history, iter_loss_history)
+
+        if writer is not None:
+            writer.close()
 
         return self.model
 

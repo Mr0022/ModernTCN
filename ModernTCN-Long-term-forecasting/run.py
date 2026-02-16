@@ -115,6 +115,10 @@ parser.add_argument('--plot_training_curves', type=str2bool, default=True,
                     help='save loss-vs-epoch and loss-vs-iteration figures')
 parser.add_argument('--plot_test_sample', type=str2bool, default=True,
                     help='save a sample prediction-vs-ground-truth plot for the target variable')
+parser.add_argument('--use_tensorboard', type=str2bool, default=False,
+                    help='log training/validation metrics to TensorBoard')
+parser.add_argument('--tensorboard_log_dir', type=str, default='./runs',
+                    help='TensorBoard log root directory')
 
 args = parser.parse_args()
 

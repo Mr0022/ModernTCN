@@ -41,6 +41,20 @@ cd ./ModernTCN-Long-term-forecasting
 sh ./scripts/ETTh2.sh
 ```
 
+### TensorBoard (long-term forecasting)
+
+The long-term forecasting `run.py` now supports TensorBoard logging. Add these flags to your training command:
+
+```bash
+--use_tensorboard True --tensorboard_log_dir ./runs
+```
+
+Then launch TensorBoard from the long-term forecasting directory:
+
+```bash
+tensorboard --logdir ./runs
+```
+
 4. Short-term forecasting tasks.
 
 We provide the short-term forecasting experiment coding in `./ModernTCN-short-term` and experiment scripts can be found under the folder `./scripts`. Please run the following command:
