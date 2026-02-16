@@ -111,6 +111,10 @@ parser.add_argument('--gpu', type=int, default=0, help='gpu')
 parser.add_argument('--use_multi_gpu', action='store_true', help='use multiple gpus', default=False)
 parser.add_argument('--devices', type=str, default='0,1,2,3', help='device ids of multile gpus')
 parser.add_argument('--test_flop', action='store_true', default=False, help='See utils/tools for usage')
+parser.add_argument('--plot_training_curves', type=str2bool, default=True,
+                    help='save loss-vs-epoch and loss-vs-iteration figures')
+parser.add_argument('--plot_test_sample', type=str2bool, default=True,
+                    help='save a sample prediction-vs-ground-truth plot for the target variable')
 
 args = parser.parse_args()
 
