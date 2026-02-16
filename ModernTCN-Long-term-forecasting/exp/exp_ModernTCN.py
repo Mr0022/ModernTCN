@@ -98,6 +98,74 @@ class Exp_Main(Exp_Basic):
         self.model.train()
         return total_loss
 
+    def _save_training_plots(self, setting, epoch_history, iter_history):
+        if not getattr(self.args, 'plot_training_curves', False):
+            return
+
+        folder_path = os.path.join('./results', setting)
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        if epoch_history:
+            epochs = [item['epoch'] for item in epoch_history]
+            train_losses = [item['train_loss'] for item in epoch_history]
+            vali_losses = [item['vali_loss'] for item in epoch_history]
+            test_losses = [item['test_loss'] for item in epoch_history]
+
+            plt.figure(figsize=(8, 5))
+            plt.plot(epochs, train_losses, label='Train Loss')
+            plt.plot(epochs, vali_losses, label='Val Loss')
+            plt.plot(epochs, test_losses, label='Test Loss')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.title('Loss vs Epoch')
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(os.path.join(folder_path, 'loss_vs_epoch.png'))
+            plt.close()
+
+        if iter_history:
+            iterations = [item['iter'] for item in iter_history]
+            losses = [item['loss'] for item in iter_history]
+            plt.figure(figsize=(8, 5))
+            plt.plot(iterations, losses, linewidth=1)
+            plt.xlabel('Iteration')
+            plt.ylabel('Train Loss')
+            plt.title('Loss vs Iteration')
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(folder_path, 'loss_vs_iteration.png'))
+            plt.close()
+
+    def _save_target_sample_plot(self, setting, batch_x_np, pred_np, true_np):
+        if not getattr(self.args, 'plot_test_sample', False):
+            return
+
+        folder_path = os.path.join('./results', setting)
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        input_target = batch_x_np[0, :, -1]
+        pred_target = pred_np[0, :, -1]
+        true_target = true_np[0, :, -1]
+
+        x_hist = np.arange(len(input_target))
+        x_future = np.arange(len(input_target), len(input_target) + len(true_target))
+
+        plt.figure(figsize=(10, 5))
+        plt.plot(x_hist, input_target, label='History (target)')
+        plt.plot(x_future, true_target, label='Ground Truth (OT)')
+        plt.plot(x_future, pred_target, label='Prediction (OT)')
+        plt.xlabel('Time Steps')
+        plt.ylabel('Scaled Value')
+        plt.title('OT Prediction vs Ground Truth')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(folder_path, 'sample_ot_prediction.png'))
+        plt.close()
+
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
@@ -124,6 +192,10 @@ class Exp_Main(Exp_Basic):
                                             epochs=self.args.train_epochs,
                                             max_lr=self.args.learning_rate)
 
+        epoch_loss_history = []
+        iter_loss_history = []
+        global_iter = 0
+
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
@@ -132,6 +204,7 @@ class Exp_Main(Exp_Basic):
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
+                global_iter += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
 
@@ -181,6 +254,8 @@ class Exp_Main(Exp_Basic):
                     loss = criterion(outputs, batch_y)
                     train_loss.append(loss.item())
 
+                iter_loss_history.append({'iter': global_iter, 'loss': loss.item()})
+
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count
@@ -208,6 +283,12 @@ class Exp_Main(Exp_Basic):
 
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            epoch_loss_history.append({
+                'epoch': epoch + 1,
+                'train_loss': float(train_loss),
+                'vali_loss': float(vali_loss),
+                'test_loss': float(test_loss),
+            })
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
@@ -220,6 +301,7 @@ class Exp_Main(Exp_Basic):
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
+        self._save_training_plots(setting, epoch_loss_history, iter_loss_history)
 
         return self.model
 
@@ -240,6 +322,8 @@ class Exp_Main(Exp_Basic):
         self.model.eval()
         if self.args.call_structural_reparam and hasattr(self.model, 'structural_reparam'):
             self.model.structural_reparam()
+
+        sample_for_plot = None
 
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
@@ -291,6 +375,13 @@ class Exp_Main(Exp_Basic):
                 preds.append(pred)
                 trues.append(true)
                 inputx.append(batch_x.detach().cpu().numpy())
+                if sample_for_plot is None:
+                    sample_for_plot = (
+                        batch_x.detach().cpu().numpy(),
+                        pred,
+                        true,
+                    )
+
                 if i % 20 == 0:
                     input = batch_x.detach().cpu().numpy()
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
@@ -326,6 +417,9 @@ class Exp_Main(Exp_Basic):
         np.save(folder_path + 'pred.npy', preds)
         # np.save(folder_path + 'true.npy', trues)
         # np.save(folder_path + 'x.npy', inputx)
+
+        if sample_for_plot is not None:
+            self._save_target_sample_plot(setting, *sample_for_plot)
         return
 
     def predict(self, setting, load=False):
