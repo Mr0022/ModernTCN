@@ -317,8 +317,12 @@ class ModernTCN(nn.Module):
             B, M, D, N = x.shape
             x = x.reshape(B * M, D, N)
             if i==0:
-                if self.patch_size != self.patch_stride:
-                    # stem layer padding
+                if self.patch_size > self.patch_stride:
+                    # stem layer padding -- only when the patches OVERLAP.
+                    # A stride wider than the patch leaves gaps instead, and
+                    # needs no padding: seq_len // patch_stride already equals
+                    # the stem conv's output length. Padding by the negative
+                    # difference would ask for a tensor of negative width.
                     pad_len = self.patch_size - self.patch_stride
                     pad = x[:,:,-1:].repeat(1,1,pad_len)
                     x = torch.cat([x,pad],dim=-1)

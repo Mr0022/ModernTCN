@@ -90,10 +90,34 @@ are unused. The one place the families cannot match is the start of training:
 HAR loses 22 rows to its monthly component and ModernTCN loses `seq_len`, since
 neither can look back past the first row in the file.
 
+**Hyperparameters.** One Bayesian-optimisation search per horizon. The h=1
+column is also the argparse default in `run.py`, so a run that omits these flags
+reproduces the 1-step-ahead setup:
+
+| | h=1 (default) | h=5 | h=22 |
+|---|---|---|---|
+| `seq_len` | 22 | 35 | 35 |
+| `patch_size` | 32 | 32 | 4 |
+| `patch_stride` | 8 | 2 | 8 |
+| `dims` | 32 | 32 | 32 |
+| `ffn_ratio` | 3 | 3 | 2 |
+| `large_size` | 51 | 13 | 31 |
+| `small_size` | 3 | 5 | 5 |
+| `num_blocks` | 3 | 3 | 1 |
+| `dropout` | 0.4155 | 0.0751 | 0.2332 |
+| `head_dropout` | 0.2993 | 0.3690 | 0.3228 |
+| `learning_rate` | 0.00550 | 0.00431 | 0.00779 |
+| `batch_size` | 128 | 128 | 256 |
+| `revin` | 1 | 1 | 1 |
+| best objective | 0.17672 | 0.08441 | 0.06684 |
+
+`scripts/RV.sh` carries all three; it runs h=1 alone by default.
+
 ```
 cd ./ModernTCN-Long-term-forecasting
 
-sh ./scripts/RV.sh          # h = 1, 5, 22 on data/realized_volatility.csv
+sh ./scripts/RV.sh              # h = 1 (default)
+sh ./scripts/RV.sh "1 5 22"     # all three horizons
 
 python HAR-RV_RUN.PY --data data/realized_volatility.csv --log --asset forex
 ```

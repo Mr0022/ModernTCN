@@ -37,9 +37,9 @@ parser.add_argument('--embed', type=str, default='timeF',
 
 
 # forecasting task
-parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
+parser.add_argument('--seq_len', type=int, default=22, help='input sequence length')
 parser.add_argument('--label_len', type=int, default=48, help='start token length')
-parser.add_argument('--pred_len', type=int, default=96,
+parser.add_argument('--pred_len', type=int, default=1,
                     help='prediction sequence length; for --data RV this is the HORIZON h '
                          '(1 daily, 5 weekly, 22 monthly) and the model emits ONE number, '
                          'the h-day aggregate, instead of an h-step path')
@@ -48,17 +48,21 @@ parser.add_argument('--pred_len', type=int, default=96,
 
 
 #ModernTCN
+# Defaults below are the h=1 column of the Bayesian-optimisation search over
+# data/realized_volatility.csv (best objective 0.17672). patch_stride, batch_size
+# and revin already carried the tuned value. The h=5 and h=22 columns live in
+# scripts/RV.sh; pass them explicitly when running those horizons.
 parser.add_argument('--stem_ratio', type=int, default=6, help='stem ratio')
 parser.add_argument('--downsample_ratio', type=int, default=2, help='downsample_ratio')
-parser.add_argument('--ffn_ratio', type=int, default=2, help='ffn_ratio')
-parser.add_argument('--patch_size', type=int, default=16, help='the patch size')
+parser.add_argument('--ffn_ratio', type=int, default=3, help='ffn_ratio')
+parser.add_argument('--patch_size', type=int, default=32, help='the patch size')
 parser.add_argument('--patch_stride', type=int, default=8, help='the patch stride')
 
-parser.add_argument('--num_blocks', nargs='+',type=int, default=[1,1,1,1], help='num_blocks in each stage')
-parser.add_argument('--large_size', nargs='+',type=int, default=[31,29,27,13], help='big kernel size')
-parser.add_argument('--small_size', nargs='+',type=int, default=[5,5,5,5], help='small kernel size for structral reparam')
-parser.add_argument('--dims', nargs='+',type=int, default=[256,256,256,256], help='dmodels in each stage')
-parser.add_argument('--dw_dims', nargs='+',type=int, default=[256,256,256,256])
+parser.add_argument('--num_blocks', nargs='+',type=int, default=[3], help='num_blocks in each stage; its LENGTH is the number of stages, so large_size and small_size must be at least as long')
+parser.add_argument('--large_size', nargs='+',type=int, default=[51], help='big kernel size')
+parser.add_argument('--small_size', nargs='+',type=int, default=[3], help='small kernel size for structral reparam')
+parser.add_argument('--dims', nargs='+',type=int, default=[32,32,32,32], help='dmodels in each stage; needs 4 entries, one per downsampling layer')
+parser.add_argument('--dw_dims', nargs='+',type=int, default=[32,32,32,32])
 
 parser.add_argument('--small_kernel_merged', type=str2bool, default=False, help='small_kernel has already merged or not')
 parser.add_argument('--call_structural_reparam', type=bool, default=False, help='structural_reparam after training')
@@ -67,7 +71,7 @@ parser.add_argument('--use_multi_scale', type=str2bool, default=True, help='use_
 
 # PatchTST
 parser.add_argument('--fc_dropout', type=float, default=0.05, help='fully connected dropout')
-parser.add_argument('--head_dropout', type=float, default=0.0, help='head dropout')
+parser.add_argument('--head_dropout', type=float, default=0.2993, help='head dropout')
 parser.add_argument('--patch_len', type=int, default=16, help='patch length')
 parser.add_argument('--stride', type=int, default=8, help='stride')
 parser.add_argument('--padding_patch', default='end', help='None: None; end: padding on the end')
@@ -93,7 +97,7 @@ parser.add_argument('--factor', type=int, default=1, help='attn factor')
 parser.add_argument('--distil', action='store_false',
                     help='whether to use distilling in encoder, using this argument means not using distilling',
                     default=True)
-parser.add_argument('--dropout', type=float, default=0.05, help='dropout')
+parser.add_argument('--dropout', type=float, default=0.4155, help='dropout')
 
 parser.add_argument('--activation', type=str, default='gelu', help='activation')
 parser.add_argument('--output_attention', action='store_true', help='whether to output attention in ecoder')
@@ -105,7 +109,7 @@ parser.add_argument('--itr', type=int, default=2, help='experiments times')
 parser.add_argument('--train_epochs', type=int, default=100, help='train epochs')
 parser.add_argument('--batch_size', type=int, default=128, help='batch size of train input data')
 parser.add_argument('--patience', type=int, default=100, help='early stopping patience')
-parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
+parser.add_argument('--learning_rate', type=float, default=0.0055, help='optimizer learning rate')
 parser.add_argument('--des', type=str, default='test', help='exp description')
 parser.add_argument('--loss', type=str, default='mse', help='loss function')
 parser.add_argument('--lradj', type=str, default='type3', help='adjust learning rate')
