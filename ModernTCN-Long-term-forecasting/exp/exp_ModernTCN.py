@@ -2,7 +2,7 @@ from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
 from models import ModernTCN
 from utils.tools import EarlyStopping, adjust_learning_rate, visual, test_params_flop
-from utils.metrics import metric
+from utils.metrics import metric, QLIKE
 
 import numpy as np
 import torch
@@ -332,6 +332,14 @@ class Exp_Main(Exp_Basic):
         f.write('\n')
         f.close()
 
+        # Returned so run.py can average across seeds. 'MSE' / 'MAE' are the
+        # HEADLINE losses: for an aggregated RV run the block below restates
+        # them in ln(RV) units, the scale the model is fitted on and the one
+        # HAR-RV reports, and adds QLIKE on the back-transformed variance.
+        # Elsewhere they stay in the standardised units this print shows.
+        results = {'MSE': float(mse), 'MAE': float(mae), 'RSE': float(rse),
+                   'MSE_scaled': float(mse), 'MAE_scaled': float(mae)}
+
         # np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe,rse, corr]))
         np.save(folder_path + 'pred.npy', preds)
         # np.save(folder_path + 'true.npy', trues)
@@ -341,8 +349,11 @@ class Exp_Main(Exp_Basic):
         # in. For an aggregated RV run, restate them in ln(RV) and in RV so they
         # can be read next to HAR-RV_RUN.PY --log.
         if getattr(self.args, 'aggregate', False):
-            self._report_rv(setting, folder_path, test_data, preds, trues)
-        return
+            m = self._report_rv(setting, folder_path, test_data, preds, trues)
+            results.update({k: m[k] for k in
+                            ('MSE', 'MAE', 'QLIKE', 'QLIKE_naive',
+                             'MSE_RV', 'MAE_RV', 'horizon', 'n_obs')})
+        return results
 
     # ==========================================================================
     #  Aggregated realized-volatility evaluation  (--data RV)
@@ -423,18 +434,13 @@ class Exp_Main(Exp_Basic):
         pred_rv = np.exp(pred_log + resid_var / 2.0)     # Jensen-corrected
         pred_rv_naive = np.exp(pred_log)                 # median, uncorrected
 
-        def _qlike(actual, predicted):
-            # QLIKE (Patton, 2011): mean( RV/RV_hat - ln(RV/RV_hat) - 1 ).
-            # exp() cannot return a non-positive variance, so the floor HAR-RV
-            # needs for its levels fit never binds here; it is kept only so a
-            # numerical underflow to 0.0 cannot produce an infinity.
-            floor = 1e-4 * float(np.mean(actual))
-            safe = np.where(predicted <= 0, floor, predicted)
-            ratio = actual / safe
-            return float(np.mean(ratio - np.log(ratio) - 1)), int((predicted <= 0).sum())
-
-        qlike, n_neg = _qlike(true_rv, pred_rv)
-        qlike_naive, _ = _qlike(true_rv, pred_rv_naive)
+        # utils.metrics.QLIKE floors any non-positive forecast before scoring.
+        # exp() cannot produce one, so that guard never binds here -- it is what
+        # HAR-RV's levels fit needs, and sharing the function keeps the two
+        # families' QLIKE definitionally identical.
+        qlike = QLIKE(pred_rv, true_rv)
+        qlike_naive = QLIKE(pred_rv_naive, true_rv)
+        n_neg = int((pred_rv <= 0).sum())
         m = {
             'model': self.args.model,
             'horizon': h,

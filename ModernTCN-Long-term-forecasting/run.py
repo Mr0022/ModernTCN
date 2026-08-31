@@ -12,7 +12,8 @@ from utils.str2bool import str2bool
 parser = argparse.ArgumentParser(description='ModernTCN')
 
 # random seed
-parser.add_argument('--random_seed', type=int, default=2021, help='random seed')
+parser.add_argument('--random_seed', type=int, default=2021,
+                    help='FIRST random seed; run i of --itr uses random_seed + i, so the default --itr 5 covers 2021..2025')
 
 # basic config
 parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
@@ -105,7 +106,8 @@ parser.add_argument('--do_predict', action='store_true', help='whether to predic
 
 # optimization
 parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
-parser.add_argument('--itr', type=int, default=2, help='experiments times')
+parser.add_argument('--itr', type=int, default=2,
+                    help='how many SEEDS to run; each is trained and tested from scratch, metrics are printed per seed and averaged at the end')
 parser.add_argument('--train_epochs', type=int, default=100, help='train epochs')
 parser.add_argument('--batch_size', type=int, default=128, help='batch size of train input data')
 parser.add_argument('--patience', type=int, default=100, help='early stopping patience')
@@ -138,11 +140,77 @@ if args.aggregate and args.label_len != 0:
           .format(args.data))
     args.label_len = 0
 
-# random seed
-fix_seed = args.random_seed
-random.seed(fix_seed)
-torch.manual_seed(fix_seed)
-np.random.seed(fix_seed)
+def set_seed(seed):
+    """Seed every generator that can move a run. Called once per iteration."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def summarize_seeds(rows, args):
+    """
+    Print the per-seed table and the average over seeds.
+
+    One seed is one number, not a result: re-running with a different
+    initialisation moves these losses around, so the mean is what should be
+    reported and the standard deviation says how far to trust it.
+
+    Which columns appear depends on the run. An aggregated RV run
+    (--data RV) is scored the way HAR-RV_RUN.PY --log is -- MSE and MAE in
+    ln(RV) units, the scale the model is fitted on, plus QLIKE on the
+    back-transformed variance, where QLIKE is only defined -- and carries
+    MSE_RV / MAE_RV on that same variance scale. Any other run reports the
+    standardised-unit losses it was trained on.
+    """
+    if not rows:
+        return
+    if getattr(args, 'aggregate', False):
+        cols = [('MSE', 'MSE[ln]'), ('MAE', 'MAE[ln]'), ('QLIKE', 'QLIKE[RV]'),
+                ('MSE_RV', 'MSE_RV'), ('MAE_RV', 'MAE_RV')]
+    else:
+        cols = [('MSE', 'MSE'), ('MAE', 'MAE'), ('RSE', 'RSE')]
+    cols = [c for c in cols if c[0] in rows[0]]
+
+    seeds = [r['seed'] for r in rows]
+    head = '  {:<8}'.format('seed') + ''.join('{:>14}'.format(h) for _, h in cols)
+    rule = '-' * len(head)
+    title = '  SEED SUMMARY  --  {}  |  {} seed(s): {}'.format(
+        args.model_id, len(rows),
+        ', '.join(str(s) for s in seeds) if len(seeds) <= 8 else
+        '{}..{}'.format(seeds[0], seeds[-1]))
+    if getattr(args, 'aggregate', False):
+        title += '  |  h={}'.format(args.pred_len)
+
+    print('\n' + '=' * len(head))
+    print(title)
+    print(rule)
+    print(head)
+    print(rule)
+    for r in rows:
+        print('  {:<8}'.format(r['seed'])
+              + ''.join('{:>14.6f}'.format(r[k]) for k, _ in cols))
+    print(rule)
+    for label, fn in (('mean', np.mean), ('std', np.std)):
+        print('  {:<8}'.format(label)
+              + ''.join('{:>14.6f}'.format(fn([r[k] for r in rows]))
+                        for k, _ in cols))
+    print('=' * len(head))
+
+    os.makedirs('./results', exist_ok=True)
+    out = './results/{}_{}_seed_metrics.csv'.format(args.model_id, args.des)
+    keys = [k for k, _ in cols]
+    with open(out, 'w') as f:
+        f.write(','.join(['model_id', 'horizon', 'seed'] + keys) + '\n')
+        for r in rows:
+            f.write(','.join([args.model_id, str(args.pred_len), str(r['seed'])]
+                             + [str(r[k]) for k in keys]) + '\n')
+        for label, fn in (('mean', np.mean), ('std', np.std)):
+            f.write(','.join([args.model_id, str(args.pred_len), label]
+                             + [str(fn([r[k] for r in rows])) for k in keys]) + '\n')
+    print('  -> Saved: {}\n'.format(out))
+
 
 
 args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
@@ -160,7 +228,15 @@ if __name__ == '__main__':
     Exp = Exp_Main
 
     if args.is_training:
+        seed_metrics = []
         for ii in range(args.itr):
+            # One iteration is one SEED, not a repeat of the same run: seeding
+            # here (before the model is built) is what makes the initialisation
+            # and the batch order differ, so averaging across iterations
+            # measures run-to-run spread instead of re-reporting one draw.
+            seed = args.random_seed + ii
+            set_seed(seed)
+
             # setting record of experiments
             setting = '{}_{}_{}_ft{}_sl{}_pl{}_dim{}_nb{}_lk{}_sk{}_ffr{}_ps{}_str{}_multi{}_merged{}_{}_{}'.format(
                 args.model_id,
@@ -179,21 +255,34 @@ if __name__ == '__main__':
                 args.use_multi_scale,
                 args.small_kernel_merged,
                 args.des,
-                ii)
+                seed)
 
             exp = Exp(args)  # set experiments
-            print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
+            print('>>>>>>>start training : {} [seed {}, {}/{}]>>>>>>>>>>>>>>'.format(
+                setting, seed, ii + 1, args.itr))
             exp.train(setting)
 
-            print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            exp.test(setting)
+            print('>>>>>>>testing : {} [seed {}]<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(
+                setting, seed))
+            m = exp.test(setting)
+            m['seed'] = seed
+            seed_metrics.append(m)
+            if args.aggregate:
+                print('  [seed {}]  MSE[ln]:{:.6f}  MAE[ln]:{:.6f}  QLIKE:{:.6f}'
+                      .format(seed, m['MSE'], m['MAE'], m['QLIKE']))
+            else:
+                print('  [seed {}]  MSE:{:.6f}  MAE:{:.6f}'
+                      .format(seed, m['MSE'], m['MAE']))
 
             if args.do_predict:
                 print('>>>>>>>predicting : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
                 exp.predict(setting, True)
 
             torch.cuda.empty_cache()
+
+        summarize_seeds(seed_metrics, args)
     else:
+        set_seed(args.random_seed)
         ii = 0
         setting = '{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(args.model_id,
                                                                                                       args.model,

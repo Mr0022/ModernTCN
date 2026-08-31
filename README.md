@@ -122,12 +122,35 @@ sh ./scripts/RV.sh "1 5 22"     # all three horizons
 python HAR-RV_RUN.PY --data data/realized_volatility.csv --log --asset forex
 ```
 
-Each run writes `results/<setting>/rv_metrics.csv` and `rv_forecasts.csv`. The
-metrics restate the forecasts on the two scales HAR-RV reports - MSE/MAE in
-`ln(RV)` units, and QLIKE / MSE_RV / MAE_RV after a Jensen-corrected `exp()`,
-`E[RV|F] = exp(E[ln RV|F] + sigma^2/2)`, with `sigma^2` taken from the
-validation log residuals - under the same column names
+**Seeds.** `--itr` is the number of seeds, not repeats of one run: iteration
+`i` seeds everything with `random_seed + i` before the model is built, so
+`--random_seed 2021 --itr 5` covers 2021-2025. MSE, MAE and QLIKE are printed
+after every seed and averaged at the end, with the standard deviation beside the
+mean - one seed is a draw, not a result:
+
+```
+  SEED SUMMARY  --  RV_22_1  |  5 seed(s): 2021, 2022, 2023, 2024, 2025  |  h=1
+  --------------------------------------------------------------------------
+  seed           MSE[ln]       MAE[ln]     QLIKE[RV]        MSE_RV     MAE_RV
+  --------------------------------------------------------------------------
+  2021          0.309805      0.421181      0.191580      0.026944   0.087085
+  ...
+  mean          0.312448      0.421338      0.192328      0.026773   0.088801
+  std           0.007336      0.004760      0.005482      0.000384   0.001428
+```
+
+The table also lands in `results/<model_id>_<des>_seed_metrics.csv`.
+
+Each run additionally writes `results/<setting>/rv_metrics.csv` and
+`rv_forecasts.csv`. The metrics restate the forecasts on the two scales HAR-RV
+reports - MSE/MAE in `ln(RV)` units, and QLIKE / MSE_RV / MAE_RV after a
+Jensen-corrected `exp()`, `E[RV|F] = exp(E[ln RV|F] + sigma^2/2)`, with
+`sigma^2` taken from the validation log residuals - under the same column names
 `har_rv_log_all_metrics.csv` uses, so the two files concatenate directly.
+QLIKE (Patton, 2011) lives in `utils/metrics.py` and is shared with HAR-RV; it
+is asymmetric, punishing an under-forecast variance far harder than an
+over-forecast one, which is why it is reported next to MSE rather than instead
+of it.
 
 4. Short-term forecasting tasks.
 

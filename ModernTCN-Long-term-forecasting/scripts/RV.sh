@@ -45,6 +45,10 @@
 #
 #   sh ./scripts/RV.sh              # h = 1 only (default)
 #   sh ./scripts/RV.sh "1 5 22"     # all three horizons
+#
+# Each horizon is run over 5 SEEDS (2021..2025 -- --itr is the seed count and
+# --random_seed the first). MSE, MAE and QLIKE are printed per seed and averaged
+# at the end, because one seed is a draw rather than a result.
 # ==============================================================================
 
 HORIZONS="${1:-1}"
@@ -94,7 +98,8 @@ python -u run.py \
   --learning_rate $learning_rate \
   --batch_size $batch_size \
   --revin 1 \
-  --itr 1 \
+  --random_seed 2021 \
+  --itr 5 \
   --train_epochs 100 \
   --patience 10 \
   --des Exp \
