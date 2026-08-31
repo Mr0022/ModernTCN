@@ -73,6 +73,10 @@ rows are dropped, as in HAR-RV. Standardisation is fitted on the training
 Window enumeration embargoes the split seams, so no training target reaches into
 validation rows and no validation target into test.
 
+**Colab.** [`RV_benchmark_colab.ipynb`](RV_benchmark_colab.ipynb) runs both families over all
+three horizons and prints the comparison as a table and as LaTeX:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Mr0022/ModernTCNt/blob/claude/moderntcn-aggregation-log-ptj8ao/RV_benchmark_colab.ipynb)
+
 **Splits.** Both families read their calendar from `data_provider/splits.py`,
 which is the single source of truth for where the boundaries fall
 (`--asset`, default `forex`):
