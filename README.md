@@ -172,6 +172,10 @@ python sensitivity/ofat_sensitivity.py               # ~40 configs x 5 seeds
 python sensitivity/ofat_plots.py
 ```
 
+[`RV_sensitivity_colab.ipynb`](RV_sensitivity_colab.ipynb) runs the sweep on Colab, saving results
+and figures to Google Drive as it goes:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Mr0022/ModernTCNt/blob/claude/moderntcn-aggregation-log-ptj8ao/RV_sensitivity_colab.ipynb)
+
 The anchor comes from `results_optuna/optuna_h1_best.json` when a search has been run, and falls
 back to the tuned defaults otherwise. The sweep is resumable — points already in the CSV are
 skipped. OFAT is *local* sensitivity: it says how the loss moves one step away from the optimum
