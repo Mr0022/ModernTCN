@@ -48,7 +48,7 @@ def data_provider(args, flag):
         batch_size = args.batch_size
         freq = args.freq
 
-    data_set = Data(
+    kwargs = dict(
         root_path=args.root_path,
         data_path=args.data_path,
         flag=flag,
@@ -58,6 +58,11 @@ def data_provider(args, flag):
         timeenc=timeenc,
         freq=freq
     )
+    if agg:
+        # Which calendar in data_provider/splits.py to split on. Only the
+        # aggregated loaders take it; the others carry their own borders.
+        kwargs['asset'] = getattr(args, 'asset', None)
+    data_set = Data(**kwargs)
     print(flag, len(data_set))
     data_loader = DataLoader(
         data_set,

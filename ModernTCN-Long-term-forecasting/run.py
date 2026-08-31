@@ -3,6 +3,7 @@ import os
 
 import torch
 from data_provider.data_factory import is_aggregated
+from data_provider.splits import SPLITS, DEFAULT_ASSET
 from exp.exp_ModernTCN import Exp_Main
 import random
 import numpy as np
@@ -29,6 +30,8 @@ parser.add_argument('--target', type=str, default='OT', help='target feature in 
 parser.add_argument('--freq', type=str, default='h',
                     help='freq for time features encoding, options:[s:secondly, t:minutely, h:hourly, d:daily, b:business days, w:weekly, m:monthly], you can also use more detailed freq like 15min or 3h')
 parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
+parser.add_argument('--asset', type=str, default=DEFAULT_ASSET, choices=sorted(SPLITS),
+                    help='which split calendar in data_provider/splits.py to use (--data RV only); \'forex\' = train 2010-01-01..2021-12-31 / val 2022-01-01..2023-12-31 / test 2024-01-01..2025-04-07. HAR-RV_RUN.PY reads the same module and folds val into training, so the test window matches')
 parser.add_argument('--embed', type=str, default='timeF',
                     help='time features encoding, options:[timeF, fixed, learned]')
 

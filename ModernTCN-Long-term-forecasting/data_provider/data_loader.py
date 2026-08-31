@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from utils.timefeatures import time_features
+from data_provider.splits import SPLITS, DEFAULT_ASSET, dl_bounds, row_range, fmt_month
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -442,6 +443,19 @@ class Dataset_RV(Dataset):
     window's into test.  That is the same rule horizon_month_mask applies on the
     HAR-RV side, so both families forecast the same rows.
 
+    Splits.  Calendar windows from data_provider/splits.py, the same module
+    HAR-RV_RUN.PY reads -- train 2010-01-01..2021-12-31, validation
+    2022-01-01..2023-12-31, test 2024-01-01..2025-04-07 on the default calendar.
+    The forecast origins of a split are exactly its own rows; the seq_len rows
+    in front of it are look-back inputs only, the way HAR's 22-day rolling
+    window reaches back before its first estimation row.  HAR folds validation
+    into training (OLS has nothing to tune) and keeps the same test window, so
+    both families are scored on identical rows.  Rows outside every window --
+    here, after 2025-04-07 -- are not used at all.  The one place the two
+    families cannot match is the START of training: HAR loses 22 rows to its
+    monthly component, this loader loses seq_len rows, because neither can look
+    back past the first row in the file.
+
     Standardisation.  StandardScaler is fitted on the TRAINING ln(RV) rows only.
     The target is built on the raw variance scale first, logged, and only then
     standardised with those same training statistics -- the log is non-linear, so
@@ -463,7 +477,7 @@ class Dataset_RV(Dataset):
 
     def __init__(self, root_path, flag='train', size=None,
                  features='S', data_path='realized_volatility.csv',
-                 target='RV', scale=True, timeenc=0, freq='d'):
+                 target='RV', scale=True, timeenc=0, freq='d', asset=None):
         # size [seq_len, label_len, pred_len]; pred_len is the HORIZON h here
         if size is None:
             self.seq_len = 96
@@ -485,6 +499,11 @@ class Dataset_RV(Dataset):
         self.scale = scale
         self.timeenc = timeenc
         self.freq = freq
+
+        self.asset = DEFAULT_ASSET if asset is None else asset
+        if self.asset not in SPLITS:
+            raise KeyError("unknown --asset '{}'; data_provider/splits.py "
+                           'defines {}'.format(self.asset, sorted(SPLITS)))
 
         self.root_path = root_path
         self.data_path = data_path
@@ -545,25 +564,31 @@ class Dataset_RV(Dataset):
         fwd = rv.rolling(h).mean().shift(-(h - 1))
         y_agg = np.log(fwd)
 
-        n = len(rv)
-        num_train = int(n * 0.7)
-        num_test = int(n * 0.2)
-        num_vali = n - num_train - num_test
-        border1s = [0, num_train - self.seq_len, n - num_test - self.seq_len]
-        border2s = [num_train, num_train + num_vali, n]
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
-        if border1 < 0:
-            raise ValueError(
-                'seq_len={} leaves no look-back before the {} split of {} rows; '
-                'shorten --seq_len or lengthen the sample.'
-                .format(self.seq_len, self.flag, n))
+        # Calendar split, from data_provider/splits.py -- the same module HAR-RV
+        # reads, so the test window is identical for both families.
+        cal = SPLITS[self.asset]
+        lo, hi = dl_bounds(cal, self.flag)
+        first, last = row_range(rv.index, lo, hi)
+        # The forecast origins ARE the rows of the split; the seq_len rows in
+        # front of it are look-back only, and are inputs at every origin the way
+        # HAR's 22-day rolling window is. Rows outside [lo, hi] are never a
+        # target here, which is what embargoes the seam with the next split.
+        border1 = max(0, first - self.seq_len)
+        border2 = last + 1
+        warmup = self.seq_len - (first - border1)
+        print('  {:5s} {} .. {}  ({} rows{})'.format(
+            self.flag, fmt_month(lo), fmt_month(hi), last - first + 1,
+            '' if warmup <= 0 else
+            '; first {} unforecastable, no look-back before them'.format(warmup)))
 
         x_all = ln_rv.values.reshape(-1, 1)
         y_all = y_agg.values.reshape(-1, 1)   # trailing h-1 rows are NaN
         if self.scale:
-            # Training ln(RV) rows only -- never the validation or test months.
-            self.scaler.fit(x_all[border1s[0]:border2s[0]])
+            # Training ln(RV) rows only -- never the validation or test window,
+            # and read off the calendar rather than this split's own slice, so
+            # all three splits share one set of statistics.
+            t0, t1 = row_range(rv.index, *dl_bounds(cal, 'train'))
+            self.scaler.fit(x_all[t0:t1 + 1])
             self.mean_ = float(self.scaler.mean_[0])
             self.std_ = float(self.scaler.scale_[0])
         else:

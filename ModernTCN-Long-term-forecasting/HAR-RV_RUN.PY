@@ -11,17 +11,21 @@ Split logic is imported from data_provider/splits.py, the same module the deep
 models split on, so the two families can never drift apart. The two asset
 classes do not share a calendar -- pick one with --asset:
 
-    --asset forex   train 2012-01..2022-12 | val 2023-01..2024-12 | test 2025-01..end
+    --asset forex   train 2010-01-01..2021-12-31 | val 2022-01-01..2023-12-31
+                    | test 2024-01-01..2025-04-07
     --asset crypto  train 2018-06..2024-06 | val 2024-07..2025-06 | test 2025-07..2026-06
 
 HAR-RV is OLS: there are no hyperparameters to tune, so a held-out validation
 set would serve no purpose. The validation months are therefore folded back
 into the estimation sample, on whichever calendar is in force:
 
-    forex    Train : start of sample - 2024-12   [= DL train + val]
-             Test  : 2025-01 - end of sample     [= DL test]
-    crypto   Train : 2018-06 - 2025-06           [= DL train + val]
-             Test  : 2025-07 - 2026-06           [= DL test]
+    forex    Train : 2010-01-01 - 2023-12-31      [= DL train + val]
+             Test  : 2024-01-01 - 2025-04-07      [= DL test]
+    crypto   Train : 2018-06 - 2025-06            [= DL train + val]
+             Test  : 2025-07 - 2026-06            [= DL test]
+
+Rows outside every window -- on the forex calendar, everything after
+2025-04-07 -- are not used by either family.
 
 The TEST window is identical to the deep models', so out-of-sample losses
 remain directly comparable. Note the deep models never fit on the validation
@@ -457,11 +461,12 @@ def parse_args(argv=None):
     p.add_argument(
         "--asset", choices=sorted(SPLITS), default=ASSET,
         help="Which split calendar to use (data_provider/splits.py). 'forex' = "
-             "train ..2022-12 / val 2023-01..2024-12 / test 2025-01.., 'crypto' "
-             "= train 2018-06..2024-06 / val 2024-07..2025-06 / test 2025-07.."
-             "2026-06. HAR-RV folds the validation months into training and "
-             "keeps the test window, so it stays comparable to the deep models "
-             "run with the matching --data. NOT inferred from the filename.")
+             "train 2010-01-01..2021-12-31 / val 2022-01-01..2023-12-31 / test "
+             "2024-01-01..2025-04-07, 'crypto' = train 2018-06..2024-06 / val "
+             "2024-07..2025-06 / test 2025-07..2026-06. HAR-RV folds the "
+             "validation window into training and keeps the test window, so it "
+             "stays comparable to the deep models run with the matching --data. "
+             "NOT inferred from the filename.")
     for flag, dest in (("--train-start", "train_start"),
                        ("--train-end",   "train_end"),
                        ("--test-start",  "test_start"),
@@ -623,9 +628,11 @@ def set_split_labels(index):
     The requested bounds are intersected with what the file actually holds, so
     an open bound reports the real sample edge rather than '?', and a closed
     bound that reaches past the data (a crypto CSV that stops early) reports
-    where the data really ends. Labels are months throughout: crypto's windows
-    do not fall on year ends, and printing them as years would round the
-    boundary the run was configured with.
+    where the data really ends. Labels print each boundary at the granularity it
+    was configured with -- to the day for the shipped calendars, to the month
+    for a --train-end style override. Rounding either to a year would misstate
+    the window the run actually used: neither crypto's boundaries nor the forex
+    test end falls on one.
     """
     global TRAIN_LABEL, TEST_LABEL
 
@@ -1132,8 +1139,8 @@ def print_section(title: str):
     print(f"\n{SEP}\n  {title}\n{SEP}")
 
 def print_split_info(train: pd.DataFrame, test: pd.DataFrame, h: int):
-    print(f"\n  -- Split ({ASSET} calendar, follows Dataset_"
-          f"{ASSET.capitalize()}) ------------")
+    print(f"\n  -- Split ({ASSET} calendar, follows Dataset_RV) "
+          f"------------")
     print(f"  {'Set':<8} {'Rows':>6}  {'Start':>12}  {'End':>12}  {'Window'}")
     print(f"  {THIN[:64]}")
     print(f"  {'Train':<8} {len(train):>6}  "
@@ -1158,7 +1165,7 @@ def print_split_info(train: pd.DataFrame, test: pd.DataFrame, h: int):
         print(f"           {h}-day target would close past the boundary. Each "
               f"window keeps")
         print(f"           (its rows) - {h} + 1, which is exactly what "
-              f"Dataset_{ASSET.capitalize()}")
+              f"Dataset_RV")
         print(f"           enumerates for pred_len={h}.")
     print(f"  Note: OLS has no hyperparameters, so the deep models' validation")
     print(f"        months are folded into training. Test window is identical")

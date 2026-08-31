@@ -73,10 +73,29 @@ rows are dropped, as in HAR-RV. Standardisation is fitted on the training
 Window enumeration embargoes the split seams, so no training target reaches into
 validation rows and no validation target into test.
 
+**Splits.** Both families read their calendar from `data_provider/splits.py`,
+which is the single source of truth for where the boundaries fall
+(`--asset`, default `forex`):
+
+| | train | validation | test |
+|---|---|---|---|
+| ModernTCN | 2010-01-01 - 2021-12-31 | 2022-01-01 - 2023-12-31 | 2024-01-01 - 2025-04-07 |
+| HAR-RV | 2010-01-01 - 2023-12-31 (train + val) | - | 2024-01-01 - 2025-04-07 |
+
+HAR-RV is OLS with nothing to tune, so it folds the validation window into its
+estimation sample and keeps the same test window. The two therefore forecast
+*identical* test rows - 328, 324 and 307 origins at h = 1, 5, 22, the h-1
+shrinkage being the embargo. Rows after 2025-04-07 fall outside every window and
+are unused. The one place the families cannot match is the start of training:
+HAR loses 22 rows to its monthly component and ModernTCN loses `seq_len`, since
+neither can look back past the first row in the file.
+
 ```
 cd ./ModernTCN-Long-term-forecasting
 
 sh ./scripts/RV.sh          # h = 1, 5, 22 on data/realized_volatility.csv
+
+python HAR-RV_RUN.PY --data data/realized_volatility.csv --log --asset forex
 ```
 
 Each run writes `results/<setting>/rv_metrics.csv` and `rv_forecasts.csv`. The

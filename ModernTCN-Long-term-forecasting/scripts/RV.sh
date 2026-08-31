@@ -9,6 +9,14 @@
 # the h-day average -- not an h-step path. h = 1 daily, 5 weekly, 22 monthly,
 # the three horizons HAR-RV reports.
 #
+# Splits come from data_provider/splits.py, the module HAR-RV_RUN.PY reads too:
+#   train 2010-01-01..2021-12-31 | val 2022-01-01..2023-12-31
+#   test  2024-01-01..2025-04-07
+# HAR-RV folds validation into training and keeps that test window, so both
+# families forecast identical rows. Run it over the same file with:
+#
+#   python HAR-RV_RUN.PY --data data/realized_volatility.csv --log --asset forex
+#
 # Losses land in ./results/<setting>/rv_metrics.csv with the column names
 # HAR-RV_RUN.PY writes, so the two files concatenate directly.
 # ==============================================================================
@@ -26,6 +34,7 @@ python -u run.py \
   --data_path realized_volatility.csv \
   --features S \
   --target RV \
+  --asset forex \
   --freq d \
   --seq_len $seq_len \
   --label_len 0 \
