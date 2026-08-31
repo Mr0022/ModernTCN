@@ -363,7 +363,31 @@ def parse_cli(argv=None):
     return p.parse_args(argv)
 
 
-def main(argv=None):
+def build_study(cli):
+    """
+    Create or reopen the study. Separated from main() so a caller that wants to
+    drive study.optimize() itself -- a notebook mirroring the database somewhere
+    after each trial, say -- gets the same sampler, pruner and storage.
+    """
+    sampler = TPESampler(seed=cli.sampler_seed,
+                         n_startup_trials=cli.startup_trials,
+                         multivariate=True, group=True)
+    pruner = (optuna.pruners.NopPruner() if cli.no_prune else
+              MedianPruner(n_startup_trials=cli.startup_trials,
+                           n_warmup_steps=cli.warmup_epochs))
+    return optuna.create_study(
+        direction='minimize', sampler=sampler, pruner=pruner,
+        study_name=cli.study_name,
+        storage=None if cli.storage.lower() == 'none' else cli.storage,
+        load_if_exists=True)
+
+
+def main(argv=None, callbacks=None):
+    """
+    Run a search. `callbacks` is passed straight to study.optimize and fires
+    after every trial -- what a Colab session uses to copy the database out to
+    Drive as it goes, so a dropped runtime costs only the trial in flight.
+    """
     cli = parse_cli(argv)
     if cli.study_name is None:
         cli.study_name = '{}_h{}_{}'.format(cli.model, cli.pred_len, cli.objective)
@@ -389,21 +413,10 @@ def main(argv=None):
     print('  storage     : {}'.format(cli.storage))
     print('=' * 72)
 
-    sampler = TPESampler(seed=cli.sampler_seed,
-                         n_startup_trials=cli.startup_trials,
-                         multivariate=True, group=True)
-    pruner = (optuna.pruners.NopPruner() if cli.no_prune else
-              MedianPruner(n_startup_trials=cli.startup_trials,
-                           n_warmup_steps=cli.warmup_epochs))
-
-    study = optuna.create_study(
-        direction='minimize', sampler=sampler, pruner=pruner,
-        study_name=cli.study_name,
-        storage=None if cli.storage.lower() == 'none' else cli.storage,
-        load_if_exists=True)
-
+    study = build_study(cli)
     study.optimize(make_objective(cli), n_trials=cli.n_trials,
-                   gc_after_trial=True, show_progress_bar=False)
+                   gc_after_trial=True, show_progress_bar=False,
+                   callbacks=callbacks)
     report(study, cli)
     return study
 

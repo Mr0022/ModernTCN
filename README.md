@@ -148,6 +148,18 @@ last being the `run.py` invocation that re-runs the winner over 5 seeds.
 `--objective {mse,mae,qlike}` picks the criterion; `mse`/`mae` are in ln(RV)
 units, `qlike` on the back-transformed variance.
 
+[`RV_optuna_search_colab.ipynb`](RV_optuna_search_colab.ipynb) runs the same search on Colab,
+saving to Google Drive and producing a study that
+[optuna-dashboard](https://optuna-dashboard.readthedocs.io/) opens directly:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Mr0022/ModernTCNt/blob/claude/moderntcn-aggregation-log-ptj8ao/RV_optuna_search_colab.ipynb)
+
+It keeps the working SQLite database on local disk and copies a consistent snapshot to Drive after
+every trial, using SQLite's online-backup API. Drive's FUSE mount does not implement the file
+locking SQLite needs, so a study written straight to `/content/drive/...` eventually fails with
+*database is locked* and can be left corrupt rather than merely interrupted. With the snapshot, a
+dropped runtime costs the trial in flight and nothing more - the notebook copies the study back and
+continues.
+
 **Seeds.** `--itr` is the number of seeds, not repeats of one run: iteration
 `i` seeds everything with `random_seed + i` before the model is built, so
 `--random_seed 2021 --itr 5` covers 2021-2025. MSE, MAE and QLIKE are printed
