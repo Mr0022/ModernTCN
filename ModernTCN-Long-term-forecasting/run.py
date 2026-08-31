@@ -108,9 +108,11 @@ parser.add_argument('--do_predict', action='store_true', help='whether to predic
 parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
 parser.add_argument('--itr', type=int, default=2,
                     help='how many SEEDS to run; each is trained and tested from scratch, metrics are printed per seed and averaged at the end')
-parser.add_argument('--train_epochs', type=int, default=100, help='train epochs')
+parser.add_argument('--train_epochs', type=int, default=50,
+                    help='maximum training epochs; early stopping on validation loss usually ends a run before this')
 parser.add_argument('--batch_size', type=int, default=128, help='batch size of train input data')
-parser.add_argument('--patience', type=int, default=100, help='early stopping patience')
+parser.add_argument('--patience', type=int, default=10,
+                    help='early stopping patience: stop after this many epochs with no improvement in validation loss')
 parser.add_argument('--learning_rate', type=float, default=0.0055, help='optimizer learning rate')
 parser.add_argument('--des', type=str, default='test', help='exp description')
 parser.add_argument('--loss', type=str, default='mse', help='loss function')

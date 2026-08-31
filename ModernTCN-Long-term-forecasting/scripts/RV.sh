@@ -100,7 +100,7 @@ python -u run.py \
   --revin 1 \
   --random_seed 2021 \
   --itr 5 \
-  --train_epochs 100 \
+  --train_epochs 50 \
   --patience 10 \
   --des Exp \
   --lradj type3 \
