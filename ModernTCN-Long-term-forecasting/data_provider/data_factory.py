@@ -1,4 +1,4 @@
-from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred
+from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred, Dataset_RV
 from torch.utils.data import DataLoader
 
 data_dict = {
@@ -7,16 +7,30 @@ data_dict = {
     'ETTm1': Dataset_ETT_minute,
     'ETTm2': Dataset_ETT_minute,
     'custom': Dataset_Custom,
+    'RV': Dataset_RV,
 }
+
+# Datasets whose target is an AGGREGATE of the forward window rather than a
+# path: one number per window, so --pred_len is the horizon h and the model head
+# emits a single step (run.py turns this into args.out_len).
+AGG_DATA = ('RV',)
+
+
+def is_aggregated(args) -> bool:
+    return getattr(args, 'data', None) in AGG_DATA
 
 
 def data_provider(args, flag):
     Data = data_dict[args.data]
     timeenc = 0 if args.embed != 'timeF' else 1
+    agg = is_aggregated(args)
 
     if flag == 'test':
         shuffle_flag = False
-        drop_last = True
+        # Aggregated RV runs must score EVERY test window: dropping the last
+        # partial batch would silently shorten the test sample and break the
+        # row-for-row comparison against HAR-RV, which forecasts all of them.
+        drop_last = not agg
         batch_size = args.batch_size
         freq = args.freq
     elif flag == 'pred':
@@ -26,8 +40,11 @@ def data_provider(args, flag):
         freq = args.freq
         Data = Dataset_Pred
     else:
-        shuffle_flag = True
-        drop_last = True
+        # Validation of an aggregated run is read twice -- early stopping and the
+        # residual variance behind the Jensen correction -- so it keeps every row
+        # and a fixed order too.
+        shuffle_flag = not (agg and flag == 'val')
+        drop_last = not (agg and flag == 'val')
         batch_size = args.batch_size
         freq = args.freq
 

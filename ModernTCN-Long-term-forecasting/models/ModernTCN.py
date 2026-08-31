@@ -233,12 +233,22 @@ class ModernTCN(nn.Module):
         self.patch_stride = patch_stride
         self.downsample_ratio = downsample_ratio
 
+        # Width of the (currently unused) time-embedding branch. forward_feature
+        # ignores its `te` argument, so this only has to be a valid conv width --
+        # but it must not reject a legitimate sampling frequency, and realized
+        # volatility is daily.
         if freq == 'h':
             time_feature_num = 4
         elif freq == 't':
             time_feature_num = 5
+        elif freq in ('d', 'b'):
+            time_feature_num = 3
+        elif freq == 'w':
+            time_feature_num = 2
+        elif freq == 'm':
+            time_feature_num = 1
         else:
-            raise NotImplementedError("time_feature_num should be 4 or 5")
+            raise NotImplementedError("unsupported freq for time features: %s" % freq)
 
         self.te_patch = nn.Sequential(
 
@@ -371,7 +381,10 @@ class Model(nn.Module):
         self.seq_len = configs.seq_len
         self.c_in = self.nvars,
         self.individual = configs.individual
-        self.target_window = configs.pred_len
+        # Length the head emits. It equals pred_len for a normal path forecast,
+        # and 1 for an aggregated-target run (--data RV), where pred_len is the
+        # horizon h and the single output is ln of the h-day mean RV.
+        self.target_window = getattr(configs, 'out_len', configs.pred_len)
 
         self.kernel_size = configs.kernel_size
         self.patch_size = configs.patch_size

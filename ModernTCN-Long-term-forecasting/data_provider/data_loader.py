@@ -394,3 +394,234 @@ class Dataset_Pred(Dataset):
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
+
+
+class Dataset_RV(Dataset):
+    """
+    Realized volatility, HAR-RV style: AGGREGATED horizon target on the LOG scale.
+
+    This loader differs from Dataset_Custom in exactly the two ways HAR-RV_RUN.PY
+    --log does, and it does BOTH unconditionally -- there is no raw-RV mode and no
+    step-by-step mode here.
+
+    1. AGGREGATED TARGET.  One number per window -- the h-day AVERAGE, not an
+       h-step path:
+
+           Y_t^(h) = (1/h) * Sum_{k=1}^{h} RV_{t+k}
+
+       so --pred_len is the HORIZON h (1 daily, 5 weekly, 22 monthly) while the
+       head emits a single step (run.py sets args.out_len = 1).  At h=5 the model
+       predicts the mean of the next five days, once; it is never asked for the
+       five individual days.
+
+    2. LOG SCALE, LOG OF MEAN.  The input channel is ln(RV) and the target is the
+       log of the ARITHMETIC forward mean -- the log sits OUTSIDE the sum, the
+       same convention HAR-RV_RUN.PY uses for its regressors and its target:
+
+           x_t     =     ln( RV_t )
+           Y_t^(h) = ln( (1/h) * Sum_{k=1}^{h} RV_{t+k} )
+
+       Log-of-mean, NOT mean-of-logs: (1/h) * Sum ln RV_{t+k} is the log of a
+       GEOMETRIC forward mean, a systematically smaller and much smoother object
+       that a single spike lifts only through an h-th root.  With log-of-mean,
+       exp(Y_t^(h)) is precisely the raw h-day average, so a back-transformed
+       forecast is scored against exactly what HAR-RV predicts -- at every
+       horizon, not just at h=1 where the two means coincide.
+
+       Sum vs mean is cosmetic on this scale, since ln(sum) = ln(mean) + ln(h)
+       and the constant is absorbed by the model; the mean is what keeps losses
+       on one scale across horizons, and is Corsi's (2009) convention.
+
+       At h=1 the whole construction collapses to plain next-day ln(RV).
+
+    Windows.  The input covers rows [t-seq_len+1 .. t] and the target covers rows
+    [t+1 .. t+h], so the information set ends strictly one row before the target
+    window opens -- a genuine forecast, no look-ahead.  Enumeration is
+    len(split) - seq_len - h + 1, which also embargoes the split seams: no
+    training window's target can reach into validation rows, and no validation
+    window's into test.  That is the same rule horizon_month_mask applies on the
+    HAR-RV side, so both families forecast the same rows.
+
+    Standardisation.  StandardScaler is fitted on the TRAINING ln(RV) rows only.
+    The target is built on the raw variance scale first, logged, and only then
+    standardised with those same training statistics -- the log is non-linear, so
+    aggregating a standardised series would not produce the same object.  Input
+    and target therefore live in identical units, which is what lets RevIN's
+    per-window de-normalisation apply to the aggregated output unchanged.
+
+    Non-positive RV rows are dropped -- exchange holidays with no trading rather
+    than genuine zero-variance days.  ln(RV) is undefined there and a zero actual
+    makes QLIKE undefined.  HAR-RV_RUN.PY drops the same rows, so the two
+    families see the same calendar.
+
+    Columns.  A 'date' column plus one of 'RV' (raw variance) or 'ln_RV' (already
+    logged; exponentiated once so the forward windows can be averaged on the
+    variance scale).  --target names the column explicitly when the file carries
+    several.  Time stamps are built for interface compatibility only: ModernTCN's
+    forward_feature ignores its `te` argument, so nothing downstream reads them.
+    """
+
+    def __init__(self, root_path, flag='train', size=None,
+                 features='S', data_path='realized_volatility.csv',
+                 target='RV', scale=True, timeenc=0, freq='d'):
+        # size [seq_len, label_len, pred_len]; pred_len is the HORIZON h here
+        if size is None:
+            self.seq_len = 96
+            self.label_len = 0
+            self.horizon = 1
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.horizon = size[2]
+        assert self.horizon >= 1, 'pred_len (= horizon h) must be >= 1'
+
+        assert flag in ['train', 'test', 'val']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+        self.flag = flag
+
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq
+
+        self.root_path = root_path
+        self.data_path = data_path
+        self.__read_data__()
+
+    def __read_rv__(self, df_raw):
+        """
+        Pull the raw realized-variance series out of the file.
+
+        Priority: the --target column if it is present, then 'RV', then 'ln_RV',
+        then the first numeric column with a warning -- silently transforming the
+        wrong column is the failure mode worth being loud about.  A column named
+        ln_RV / log_RV is exponentiated once, because the forward windows have to
+        be averaged on the variance scale before the log is taken.
+        """
+        cols = [c for c in df_raw.columns if c != 'date']
+        pick = None
+        for cand in (self.target, 'RV', 'ln_RV'):
+            if cand in cols:
+                pick = cand
+                break
+        if pick is None:
+            pick = df_raw[cols].select_dtypes('number').columns[0]
+            print("  WARNING: no '{}'/'RV'/'ln_RV' column. Using '{}' AS RAW RV."
+                  .format(self.target, pick))
+        s = df_raw[pick].astype(float)
+        if pick.lower() in ('ln_rv', 'log_rv'):
+            print("  Column '{}' found -> already log scale, exp() once to raw RV."
+                  .format(pick))
+            s = np.exp(s)
+        else:
+            print("  Column '{}' found -> raw realized variance.".format(pick))
+        return s
+
+    def __read_data__(self):
+        self.scaler = StandardScaler()
+        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+        if 'date' not in df_raw.columns:
+            raise ValueError("Dataset_RV needs a 'date' column in {}."
+                             .format(self.data_path))
+
+        dates = pd.to_datetime(df_raw['date'])
+        rv = pd.Series(self.__read_rv__(df_raw).values, index=dates)
+        rv = rv.sort_index().dropna()
+
+        n_bad = int((rv <= 0).sum())
+        if n_bad:
+            print('  Dropped {} non-positive RV row(s) (non-trading days).'
+                  .format(n_bad))
+            rv = rv[rv > 0]
+
+        h = self.horizon
+        # Input channel: ln(RV).  Target: ln of the ARITHMETIC forward mean --
+        # averaged on the raw variance scale, logged only afterwards.  Indexing
+        # is such that y_agg[t] covers rows t .. t+h-1, so the window ending at
+        # row t-1 forecasts it.
+        ln_rv = np.log(rv)
+        fwd = rv.rolling(h).mean().shift(-(h - 1))
+        y_agg = np.log(fwd)
+
+        n = len(rv)
+        num_train = int(n * 0.7)
+        num_test = int(n * 0.2)
+        num_vali = n - num_train - num_test
+        border1s = [0, num_train - self.seq_len, n - num_test - self.seq_len]
+        border2s = [num_train, num_train + num_vali, n]
+        border1 = border1s[self.set_type]
+        border2 = border2s[self.set_type]
+        if border1 < 0:
+            raise ValueError(
+                'seq_len={} leaves no look-back before the {} split of {} rows; '
+                'shorten --seq_len or lengthen the sample.'
+                .format(self.seq_len, self.flag, n))
+
+        x_all = ln_rv.values.reshape(-1, 1)
+        y_all = y_agg.values.reshape(-1, 1)   # trailing h-1 rows are NaN
+        if self.scale:
+            # Training ln(RV) rows only -- never the validation or test months.
+            self.scaler.fit(x_all[border1s[0]:border2s[0]])
+            self.mean_ = float(self.scaler.mean_[0])
+            self.std_ = float(self.scaler.scale_[0])
+        else:
+            self.mean_, self.std_ = 0.0, 1.0
+        # Applied by hand rather than through scaler.transform so the NaN tail of
+        # the target passes through untouched; those rows are never enumerated.
+        x_all = (x_all - self.mean_) / self.std_
+        y_all = (y_all - self.mean_) / self.std_
+
+        df_stamp = pd.DataFrame({'date': rv.index[border1:border2]})
+        if self.timeenc == 0:
+            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
+            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
+            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
+            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
+            data_stamp = df_stamp.drop(columns=['date']).values
+        elif self.timeenc == 1:
+            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values),
+                                       freq=self.freq)
+            data_stamp = data_stamp.transpose(1, 0)
+
+        self.data_x = x_all[border1:border2]
+        self.data_y = y_all[border1:border2]
+        self.data_stamp = data_stamp
+        self.dates = rv.index[border1:border2]
+        # Raw RV over the split, kept for descriptive output and the QLIKE floor.
+        self.rv_raw = rv.values[border1:border2]
+
+        if len(self) <= 0:
+            raise ValueError(
+                'The {} split holds {} rows, too few for seq_len={} + h={}.'
+                .format(self.flag, border2 - border1, self.seq_len, h))
+
+    def __getitem__(self, index):
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end - self.label_len
+
+        seq_x = self.data_x[s_begin:s_end]
+        # label_len rows of context (0 for ModernTCN) followed by the ONE
+        # aggregated target for rows s_end .. s_end+h-1.
+        seq_y = np.concatenate([self.data_x[r_begin:s_end],
+                                self.data_y[s_end:s_end + 1]], axis=0)
+        seq_x_mark = self.data_stamp[s_begin:s_end]
+        seq_y_mark = self.data_stamp[r_begin:r_begin + self.label_len + 1]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+
+    def __len__(self):
+        # One window per usable origin: the target must close inside the split,
+        # which is what embargoes the seam with the next split.
+        return len(self.data_x) - self.seq_len - self.horizon + 1
+
+    def target_dates(self):
+        """Opening date of each window's h-day target, in window order."""
+        first = self.seq_len
+        return self.dates[first:first + len(self)]
+
+    def inverse_transform(self, data):
+        """Standardised units -> ln(RV).  Not raw RV: exp() is a separate step."""
+        return np.asarray(data) * self.std_ + self.mean_

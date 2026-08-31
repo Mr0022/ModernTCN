@@ -2,6 +2,7 @@ import argparse
 import os
 
 import torch
+from data_provider.data_factory import is_aggregated
 from exp.exp_ModernTCN import Exp_Main
 import random
 import numpy as np
@@ -35,7 +36,10 @@ parser.add_argument('--embed', type=str, default='timeF',
 # forecasting task
 parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
 parser.add_argument('--label_len', type=int, default=48, help='start token length')
-parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length')
+parser.add_argument('--pred_len', type=int, default=96,
+                    help='prediction sequence length; for --data RV this is the HORIZON h '
+                         '(1 daily, 5 weekly, 22 monthly) and the model emits ONE number, '
+                         'the h-day aggregate, instead of an h-step path')
 
 
 
@@ -114,7 +118,18 @@ parser.add_argument('--test_flop', action='store_true', default=False, help='See
 
 args = parser.parse_args()
 
-
+# Aggregated-target datasets (data_provider/data_loader.Dataset_RV) collapse the
+# whole forward window into ONE number -- ln of the h-day mean RV -- so --pred_len
+# names the horizon h while the head emits a single step. Everything else keeps
+# forecasting a pred_len-step path, so out_len == pred_len there.
+args.aggregate = is_aggregated(args)
+args.out_len = 1 if args.aggregate else args.pred_len
+if args.aggregate and args.label_len != 0:
+    # There is no decoder to prime and no h-step path to start: a label window
+    # would only pad batch_y with rows nothing reads.
+    print('--data {}: forcing --label_len 0 (aggregated target, no decoder).'
+          .format(args.data))
+    args.label_len = 0
 
 # random seed
 fix_seed = args.random_seed
