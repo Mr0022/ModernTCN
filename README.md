@@ -126,6 +126,28 @@ sh ./scripts/RV.sh "1 5 22"     # all three horizons
 python HAR-RV_RUN.PY --data data/realized_volatility.csv --log --asset forex
 ```
 
+**Hyperparameter search.** `tune_optuna.py` runs Bayesian optimisation with a
+Tree-structured Parzen Estimator (Optuna's `TPESampler`) over the space above,
+scored on the **validation** split - the test window is never read during a
+search:
+
+```
+pip install optuna
+cd ./ModernTCN-Long-term-forecasting
+python tune_optuna.py --n_trials 100                # h=1, the default
+python tune_optuna.py --n_trials 100 --pred_len 5   # one search per horizon
+```
+
+`patch_stride <= patch_size` is enforced by pruning the one invalid pair rather
+than resampling from a shrinking list, which would hand TPE a differently-shaped
+distribution in different trials. A `MedianPruner` abandons trials that fall
+behind after a warm-up, and trials are written to a SQLite study as they finish,
+so re-running the same command resumes rather than restarts. Results land in
+`results_optuna/optuna_h{h}_best.json`, `_trials.csv` and `_command.sh` - the
+last being the `run.py` invocation that re-runs the winner over 5 seeds.
+`--objective {mse,mae,qlike}` picks the criterion; `mse`/`mae` are in ln(RV)
+units, `qlike` on the back-transformed variance.
+
 **Seeds.** `--itr` is the number of seeds, not repeats of one run: iteration
 `i` seeds everything with `random_seed + i` before the model is built, so
 `--random_seed 2021 --itr 5` covers 2021-2025. MSE, MAE and QLIKE are printed

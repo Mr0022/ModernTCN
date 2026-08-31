@@ -105,7 +105,17 @@ class Exp_Main(Exp_Basic):
         self.model.train()
         return total_loss
 
-    def train(self, setting):
+    def train(self, setting, epoch_callback=None):
+        """
+        Fit the model, early-stopping on validation loss.
+
+        `epoch_callback(epoch, vali_loss)` runs after every epoch when given. It
+        is how a hyperparameter search watches a trial without owning the loop:
+        Optuna reports the value to its pruner there and raises TrialPruned to
+        abandon a configuration that is already behind, which is where most of a
+        search's time is otherwise spent. Raising anything from the callback
+        stops training; the caller decides what that means.
+        """
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
@@ -219,6 +229,12 @@ class Exp_Main(Exp_Basic):
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
+
+            if epoch_callback is not None:
+                # Raises to abandon the run; the best checkpoint so far is
+                # already on disk, so whatever the caller does next still has a
+                # usable model.
+                epoch_callback(epoch + 1, float(vali_loss))
 
             if self.args.lradj != 'TST':
                 adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args)
