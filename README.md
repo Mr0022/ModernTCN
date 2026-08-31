@@ -160,6 +160,23 @@ locking SQLite needs, so a study written straight to `/content/drive/...` eventu
 dropped runtime costs the trial in flight and nothing more - the notebook copies the study back and
 continues.
 
+**Sensitivity.** `sensitivity/ofat_sensitivity.py` anchors every hyperparameter at the tuned
+configuration and sweeps one at a time over the grid Optuna searched, training each point over 5
+seeds; `sensitivity/ofat_plots.py` turns the result into response curves, a tornado of the swing
+either side of the anchor, and a ranking of which factors move the loss at all.
+
+```
+cd ./ModernTCN-Long-term-forecasting
+python sensitivity/ofat_sensitivity.py --dry_run     # see the plan first
+python sensitivity/ofat_sensitivity.py               # ~40 configs x 5 seeds
+python sensitivity/ofat_plots.py
+```
+
+The anchor comes from `results_optuna/optuna_h1_best.json` when a search has been run, and falls
+back to the tuned defaults otherwise. The sweep is resumable — points already in the CSV are
+skipped. OFAT is *local* sensitivity: it says how the loss moves one step away from the optimum
+and cannot see interactions, so read it alongside the Optuna study rather than instead of it.
+
 **Seeds.** `--itr` is the number of seeds, not repeats of one run: iteration
 `i` seeds everything with `random_seed + i` before the model is built, so
 `--random_seed 2021 --itr 5` covers 2021-2025. MSE, MAE and QLIKE are printed

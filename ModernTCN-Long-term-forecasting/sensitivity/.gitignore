@@ -1,0 +1,3 @@
+# Sweep outputs: regenerate with ofat_sensitivity.py / ofat_plots.py.
+ofat_results.csv
+figures/
