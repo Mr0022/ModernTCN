@@ -204,7 +204,9 @@ class Stage(nn.Module):
 class ModernTCN(nn.Module):
     def __init__(self,patch_size,patch_stride, stem_ratio, downsample_ratio, ffn_ratio, num_blocks, large_size, small_size, dims, dw_dims,
                  nvars, small_kernel_merged=False, backbone_dropout=0.1, head_dropout=0.1, use_multi_scale=True, revin=True, affine=True,
-                 subtract_last=False, freq=None, seq_len=512, c_in=7, individual=False, target_window=96):
+                 subtract_last=False, freq=None, seq_len=512, c_in=7, individual=False, target_window=96,
+                 use_events=False, event_in=0, event_dim=8, event_past=True,
+                 event_future=True, event_fusion='inject'):
 
         super(ModernTCN, self).__init__()
 
@@ -256,13 +258,71 @@ class ModernTCN(nn.Module):
             nn.Conv1d(time_feature_num, dims[0], kernel_size=1, stride=1, groups=1),
             nn.BatchNorm1d(dims[0]))
 
+        # ----------------------------------------------------------------
+        # news-event conditioning  (EventTCN, --data RVEvents)
+        #
+        # Two paths, independently switchable so the ablation ladder is one
+        # flag wide:
+        #
+        #   PAST   the look-back calendar gets its own patch stem -- same
+        #          geometry as the value stem, separate weights -- and is either
+        #          added onto the stage-0 map ('inject') or carried as an extra
+        #          variable through the whole backbone ('channel'), where
+        #          ModernTCN's cross-variable ConvFFN2 mixes it with RV at every
+        #          stage. It is dropped again before the head.
+        #
+        #   FUTURE the horizon's known schedule is pooled to one vector and
+        #          generates a FiLM (gamma, beta) pair over the final feature
+        #          map's channels.
+        #
+        # The event stream never enters RevIN. RevIN normalises per window per
+        # channel, and the event columns are sparse -- 23% of trading days have
+        # no event at all -- so a window with a constant column would be divided
+        # by sqrt(eps) and explode. Keeping the stream outside RevIN entirely is
+        # what makes 'channel' fusion safe.
+        # ----------------------------------------------------------------
+        self.use_events = use_events
+        self.event_past = event_past
+        self.event_future = event_future
+        self.event_fusion = event_fusion
+        self.value_nvars = nvars
+
+        self.event_as_channel = bool(use_events and event_past and event_fusion == 'channel')
+        backbone_nvars = nvars + 1 if self.event_as_channel else nvars
+
+        if use_events:
+            if event_in <= 0:
+                raise ValueError('use_events=True needs event_in > 0 (the number '
+                                 'of event feature columns); run.py reads it off '
+                                 'the dataset.')
+            # A multi-hot / count day vector through one Linear IS the sum of the
+            # per-event-type embeddings scheduled that day, plus a learned
+            # no-event baseline from the bias. Shared by both paths so "what is
+            # scheduled" has one representation.
+            self.event_embed = nn.Linear(event_in, event_dim)
+            if event_past:
+                self.event_patch = nn.Sequential(
+                    nn.Conv1d(event_dim, dims[0], kernel_size=patch_size, stride=patch_stride),
+                    nn.BatchNorm1d(dims[0]))
+            if event_future:
+                # Zero-init => gamma = 0, beta = 0, and the modulation below is
+                # x * (1 + gamma) + beta, so the FiLM path is an exact identity
+                # at initialisation and only moves away from it where that cuts
+                # loss. (The past path is not an identity at init: its stem adds
+                # a nonzero map from the first step. --event_past False
+                # --event_future True is the variant that starts out as the
+                # unconditioned model.)
+                self.film = nn.Linear(event_dim, 2 * dims[-1])
+                nn.init.zeros_(self.film.weight)
+                nn.init.zeros_(self.film.bias)
+
         # backbone
 
         self.num_stage = len(num_blocks)
         self.stages = nn.ModuleList()
         for stage_idx in range(self.num_stage):
             layer = Stage(ffn_ratio, num_blocks[stage_idx], large_size[stage_idx], small_size[stage_idx], dmodel=dims[stage_idx],
-                          dw_model=dw_dims[stage_idx], nvars=nvars, small_kernel_merged=small_kernel_merged, drop=backbone_dropout)
+                          dw_model=dw_dims[stage_idx], nvars=backbone_nvars, small_kernel_merged=small_kernel_merged, drop=backbone_dropout)
             self.stages.append(layer)
 
         # Multi scale fusing (if needed)
@@ -308,9 +368,16 @@ class ModernTCN(nn.Module):
         _, _, _, N = x.shape
         return F.upsample(x, size=N, scale_factor=upsample_ratio, mode='bilinear')
 
-    def forward_feature(self, x, te=None):
+    def forward_feature(self, x, te=None, event_x=None):
 
         B,M,L=x.shape
+
+        # Past-event stream: (B, L, F) -> (B, event_dim, L), patched below with
+        # the SAME geometry as the value stem so the two feature maps line up.
+        if self.use_events and self.event_past and event_x is not None:
+            ev = self.event_embed(event_x).permute(0, 2, 1)
+        else:
+            ev = None
 
         x = x.unsqueeze(-2)
         for i in range(self.num_stage):
@@ -326,6 +393,10 @@ class ModernTCN(nn.Module):
                     pad_len = self.patch_size - self.patch_stride
                     pad = x[:,:,-1:].repeat(1,1,pad_len)
                     x = torch.cat([x,pad],dim=-1)
+                    if ev is not None:
+                        # the event stem sees the same padded length, or its
+                        # patch count would not match the value stem's
+                        ev = torch.cat([ev, ev[:, :, -1:].repeat(1, 1, pad_len)], dim=-1)
             else:
                 if N % self.downsample_ratio != 0:
                     pad_len = self.downsample_ratio - (N % self.downsample_ratio)
@@ -333,17 +404,37 @@ class ModernTCN(nn.Module):
             x = self.downsample_layers[i](x)
             _, D_, N_ = x.shape
             x = x.reshape(B, M, D_, N_)
+            if i == 0 and ev is not None:
+                ev_feat = self.event_patch(ev).unsqueeze(1)   # (B, 1, dims[0], N)
+                if self.event_as_channel:
+                    # events become variable M; the next iteration re-reads M
+                    x = torch.cat([x, ev_feat], dim=1)
+                else:
+                    # 'inject': add the shared event map onto every variable
+                    x = x + ev_feat
             x = self.stages[i](x)
+        if self.event_as_channel:
+            # drop it again so RevIN, the head and the loss see value vars only
+            x = x[:, :self.value_nvars]
         return x
 
-    def forward(self, x, te=None):
+    def forward(self, x, te=None, event_x=None, event_y=None):
 
         # instance norm
         if self.revin:
             x = x.permute(0, 2, 1)
             x = self.revin_layer(x, 'norm')
             x = x.permute(0, 2, 1)
-        x = self.forward_feature(x,te)
+        x = self.forward_feature(x,te,event_x)
+        if self.use_events and self.event_future and event_y is not None:
+            # Pool the horizon's KNOWN schedule -- (B, h, F) -> (B, event_dim) --
+            # and FiLM the final feature map. Mean over the h days, matching the
+            # FilmTCN implementation this is ported from; it is order-free, so a
+            # release on day 1 of the window and one on day h condition the
+            # model identically.
+            cond = self.event_embed(event_y).mean(dim=1)
+            gamma, beta = self.film(cond).chunk(2, dim=-1)   # (B, d_model) each
+            x = x * (1.0 + gamma[:, None, :, None]) + beta[:, None, :, None]
         x = self.head(x)
         # de-instance norm
         if self.revin:
@@ -394,6 +485,16 @@ class Model(nn.Module):
         self.patch_size = configs.patch_size
         self.patch_stride = configs.patch_stride
 
+        # news-event conditioning (EventTCN). event_in is the width of the event
+        # matrix the loader built, which run.py reads off the dataset because the
+        # role vocabulary decides it, not a hyperparameter.
+        self.use_events = getattr(configs, 'use_events', False)
+        self.event_in = getattr(configs, 'event_in', 0)
+        self.event_dim = getattr(configs, 'event_dim', 8)
+        self.event_past = getattr(configs, 'event_past', True)
+        self.event_future = getattr(configs, 'event_future', True)
+        self.event_fusion = getattr(configs, 'event_fusion', 'inject')
+
 
         # decomp
         self.decomposition = configs.decomposition
@@ -401,30 +502,39 @@ class Model(nn.Module):
             self.decomp_module = series_decomp(self.kernel_size)
             self.model_res = ModernTCN(patch_size=self.patch_size,patch_stride=self.patch_stride,stem_ratio=self.stem_ratio, downsample_ratio=self.downsample_ratio, ffn_ratio=self.ffn_ratio, num_blocks=self.num_blocks, large_size=self.large_size, small_size=self.small_size, dims=self.dims, dw_dims=self.dw_dims,
                  nvars=self.nvars, small_kernel_merged=self.small_kernel_merged, backbone_dropout=self.drop_backbone, head_dropout=self.drop_head, use_multi_scale=self.use_multi_scale, revin=self.revin, affine=self.affine,
-                 subtract_last=self.subtract_last, freq=self.freq, seq_len=self.seq_len, c_in=self.c_in, individual=self.individual, target_window=self.target_window)
+                 subtract_last=self.subtract_last, freq=self.freq, seq_len=self.seq_len, c_in=self.c_in, individual=self.individual, target_window=self.target_window,
+                 use_events=self.use_events, event_in=self.event_in, event_dim=self.event_dim,
+                 event_past=self.event_past, event_future=self.event_future, event_fusion=self.event_fusion)
             self.model_trend = ModernTCN(patch_size=self.patch_size,patch_stride=self.patch_stride,stem_ratio=self.stem_ratio, downsample_ratio=self.downsample_ratio, ffn_ratio=self.ffn_ratio, num_blocks=self.num_blocks, large_size=self.large_size, small_size=self.small_size, dims=self.dims, dw_dims=self.dw_dims,
                  nvars=self.nvars, small_kernel_merged=self.small_kernel_merged, backbone_dropout=self.drop_backbone, head_dropout=self.drop_head, use_multi_scale=self.use_multi_scale, revin=self.revin, affine=self.affine,
-                 subtract_last=self.subtract_last, freq=self.freq, seq_len=self.seq_len, c_in=self.c_in, individual=self.individual, target_window=self.target_window)
+                 subtract_last=self.subtract_last, freq=self.freq, seq_len=self.seq_len, c_in=self.c_in, individual=self.individual, target_window=self.target_window,
+                 use_events=self.use_events, event_in=self.event_in, event_dim=self.event_dim,
+                 event_past=self.event_past, event_future=self.event_future, event_fusion=self.event_fusion)
         else:
             self.model = ModernTCN(patch_size=self.patch_size,patch_stride=self.patch_stride,stem_ratio=self.stem_ratio, downsample_ratio=self.downsample_ratio, ffn_ratio=self.ffn_ratio, num_blocks=self.num_blocks, large_size=self.large_size, small_size=self.small_size, dims=self.dims, dw_dims=self.dw_dims,
                  nvars=self.nvars, small_kernel_merged=self.small_kernel_merged, backbone_dropout=self.drop_backbone, head_dropout=self.drop_head, use_multi_scale=self.use_multi_scale, revin=self.revin, affine=self.affine,
-                 subtract_last=self.subtract_last, freq=self.freq, seq_len=self.seq_len, c_in=self.c_in, individual=self.individual, target_window=self.target_window)
+                 subtract_last=self.subtract_last, freq=self.freq, seq_len=self.seq_len, c_in=self.c_in, individual=self.individual, target_window=self.target_window,
+                 use_events=self.use_events, event_in=self.event_in, event_dim=self.event_dim,
+                 event_past=self.event_past, event_future=self.event_future, event_fusion=self.event_fusion)
 
-    def forward(self, x, te=None):
+    def forward(self, x, te=None, event_x=None, event_y=None):
+        # event_x (B, seq_len, F) and event_y (B, h, F) keep their (batch, time,
+        # feature) layout -- the event embedding is applied along the last axis,
+        # so unlike x they are not permuted here.
 
         if self.decomposition:
             res_init, trend_init = self.decomp_module(x)
             res_init, trend_init = res_init.permute(0, 2, 1), trend_init.permute(0, 2, 1)
             if te is not None:
                 te = te.permute(0, 2, 1)
-            res = self.model_res(res_init, te)
-            trend = self.model_trend(trend_init, te)
+            res = self.model_res(res_init, te, event_x=event_x, event_y=event_y)
+            trend = self.model_trend(trend_init, te, event_x=event_x, event_y=event_y)
             x = res + trend
             x = x.permute(0, 2, 1)
         else:
             x = x.permute(0, 2, 1)
             if te is not None:
                 te = te.permute(0, 2, 1)
-            x = self.model(x, te)
+            x = self.model(x, te, event_x=event_x, event_y=event_y)
             x = x.permute(0, 2, 1)
         return x

@@ -41,6 +41,24 @@ class Exp_Main(Exp_Basic):
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
         return model
 
+    def _unpack_batch(self, batch):
+        """
+        Split a batch into the four value tensors plus the two event tensors.
+
+        Dataset_RV_Events yields six tensors -- the look-back calendar and the
+        horizon's known schedule last -- and every other loader yields four, so
+        one helper keeps a single code path for both and returns None for the
+        event tensors when there are none.
+        """
+        if len(batch) == 6:
+            batch_x, batch_y, batch_x_mark, batch_y_mark, event_x, event_y = batch
+            event_x = event_x.float().to(self.device)
+            event_y = event_y.float().to(self.device)
+        else:
+            batch_x, batch_y, batch_x_mark, batch_y_mark = batch
+            event_x = event_y = None
+        return batch_x, batch_y, batch_x_mark, batch_y_mark, event_x, event_y
+
     def _get_data(self, flag):
         data_set, data_loader = data_provider(self.args, flag)
         return data_set, data_loader
@@ -57,7 +75,9 @@ class Exp_Main(Exp_Basic):
         total_loss = []
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
+            for i, batch in enumerate(vali_loader):
+                batch_x, batch_y, batch_x_mark, batch_y_mark, event_x, event_y = \
+                    self._unpack_batch(batch)
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float()
 
@@ -73,7 +93,7 @@ class Exp_Main(Exp_Basic):
                         if 'Linear' in self.args.model or 'TST' in self.args.model:
                             outputs = self.model(batch_x)
                         elif 'TCN' in self.args.model:
-                            outputs = self.model(batch_x, batch_x_mark)
+                            outputs = self.model(batch_x, batch_x_mark, event_x=event_x, event_y=event_y)
                             # outputs = self.model(batch_x)   #if decide not to use time stamp, use this code
                         else:
                             if self.args.output_attention:
@@ -84,7 +104,7 @@ class Exp_Main(Exp_Basic):
                     if 'Linear' in self.args.model or 'TST' in self.args.model:
                         outputs = self.model(batch_x)
                     elif 'TCN' in self.args.model:
-                        outputs = self.model(batch_x, batch_x_mark)
+                        outputs = self.model(batch_x, batch_x_mark, event_x=event_x, event_y=event_y)
                         # outputs = self.model(batch_x)   #if decide not to use time stamp, use this code
                     else:
                         if self.args.output_attention:
@@ -147,7 +167,9 @@ class Exp_Main(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            for i, batch in enumerate(train_loader):
+                batch_x, batch_y, batch_x_mark, batch_y_mark, event_x, event_y = \
+                    self._unpack_batch(batch)
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
@@ -166,7 +188,7 @@ class Exp_Main(Exp_Basic):
                         if 'Linear' in self.args.model or 'TST' in self.args.model:
                             outputs = self.model(batch_x)
                         elif 'TCN' in self.args.model:
-                            outputs = self.model(batch_x, batch_x_mark)
+                            outputs = self.model(batch_x, batch_x_mark, event_x=event_x, event_y=event_y)
                             #outputs = self.model(batch_x)   #if decide not to use time stamp, use this code
                         else:
                             if self.args.output_attention:
@@ -183,7 +205,7 @@ class Exp_Main(Exp_Basic):
                     if 'Linear' in self.args.model or 'TST' in self.args.model:
                         outputs = self.model(batch_x)
                     elif 'TCN' in self.args.model:
-                        outputs = self.model(batch_x, batch_x_mark)
+                        outputs = self.model(batch_x, batch_x_mark, event_x=event_x, event_y=event_y)
                         # outputs = self.model(batch_x)   #if decide not to use time stamp, use this code
                     else:
                         if self.args.output_attention:
@@ -265,7 +287,9 @@ class Exp_Main(Exp_Basic):
             self.model.structural_reparam()
 
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
+            for i, batch in enumerate(test_loader):
+                batch_x, batch_y, batch_x_mark, batch_y_mark, event_x, event_y = \
+                    self._unpack_batch(batch)
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
 
@@ -281,7 +305,7 @@ class Exp_Main(Exp_Basic):
                         if 'Linear' in self.args.model or 'TST' in self.args.model:
                             outputs = self.model(batch_x)
                         elif 'TCN' in self.args.model:
-                            outputs = self.model(batch_x, batch_x_mark)
+                            outputs = self.model(batch_x, batch_x_mark, event_x=event_x, event_y=event_y)
                             # outputs = self.model(batch_x)   #if decide not to use time stamp, use this code
                         else:
                             if self.args.output_attention:
@@ -292,7 +316,7 @@ class Exp_Main(Exp_Basic):
                     if 'Linear' in self.args.model or 'TST' in self.args.model:
                         outputs = self.model(batch_x)
                     elif 'TCN' in self.args.model:
-                        outputs = self.model(batch_x, batch_x_mark)
+                        outputs = self.model(batch_x, batch_x_mark, event_x=event_x, event_y=event_y)
                         # outputs = self.model(batch_x)   #if decide not to use time stamp, use this code
                     else:
                         if self.args.output_attention:
@@ -402,10 +426,12 @@ class Exp_Main(Exp_Basic):
         was_training = self.model.training
         self.model.eval()
         with torch.no_grad():
-            for batch_x, batch_y, batch_x_mark, batch_y_mark in loader:
+            for batch in loader:
+                batch_x, batch_y, batch_x_mark, batch_y_mark, event_x, event_y = \
+                    self._unpack_batch(batch)
                 batch_x = batch_x.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
-                outputs = self.model(batch_x, batch_x_mark)
+                outputs = self.model(batch_x, batch_x_mark, event_x=event_x, event_y=event_y)
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.out_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.out_len:, f_dim:]

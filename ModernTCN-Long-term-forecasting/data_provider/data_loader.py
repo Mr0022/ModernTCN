@@ -7,6 +7,8 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from utils.timefeatures import time_features
 from data_provider.splits import SPLITS, DEFAULT_ASSET, dl_bounds, row_range, fmt_month
+from data_provider.calendar_events import (build_event_frame, align_to_index,
+                                           drop_dead_columns)
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -614,6 +616,14 @@ class Dataset_RV(Dataset):
         self.data_y = y_all[border1:border2]
         self.data_stamp = data_stamp
         self.dates = rv.index[border1:border2]
+        # The FULL trading-day index and this split's slice of it. Dataset_RV
+        # itself never needs them, but a subclass that carries a second series
+        # alongside RV (Dataset_RV_Events) has to align that series to exactly
+        # the rows kept here -- after the sort and the non-positive drop -- and
+        # to fit its own scaler on the training rows, which are not inside this
+        # split's slice when the split is validation or test.
+        self.full_index = rv.index
+        self.borders = (border1, border2)
         # Raw RV over the split, kept for descriptive output and the QLIKE floor.
         self.rv_raw = rv.values[border1:border2]
 
@@ -650,3 +660,110 @@ class Dataset_RV(Dataset):
     def inverse_transform(self, data):
         """Standardised units -> ln(RV).  Not raw RV: exp() is a separate step."""
         return np.asarray(data) * self.std_ + self.mean_
+
+
+class Dataset_RV_Events(Dataset_RV):
+    """
+    Dataset_RV plus the macro news-event calendar -- the EventTCN loader.
+
+    Everything about the RV series is inherited unchanged: the AGGREGATED target
+    on the LOG scale, log-of-mean rather than mean-of-logs, the calendar splits
+    from data_provider/splits.py, the training-only standardisation.  This class
+    only bolts a second, purely exogenous matrix onto the same rows.
+
+        Y_t^(h) = ln( (1/h) * Sum_{k=1..h} RV_{t+k} )      <- unchanged
+
+    Note this is NOT the target the FilmTCN repo's event model uses.  There the
+    aggregation is a mean of ln(RV) -- the log of a GEOMETRIC forward mean --
+    so its losses are computed on a smaller, much smoother object and do not sit
+    beside these ones, or beside HAR-RV, at any horizon past h=1.  The event
+    conditioning ports over; the numbers do not.
+
+    __getitem__ returns two extra tensors:
+
+        seq_x_events : (seq_len, F)  the calendar over the LOOK-BACK rows
+                                     [t-seq_len+1 .. t] -- a past covariate,
+                                     embedded and injected at the stem.
+        seq_y_events : (h, F)        the calendar over the TARGET window
+                                     [t+1 .. t+h] -- a future covariate, pooled
+                                     into the FiLM generator.
+
+    The horizon slice is exactly the h days whose mean RV is being forecast, and
+    it holds only what was on the release calendar: that an event is scheduled,
+    its currency and its vendor impact rating, never its outcome.  The forecast
+    origin is unchanged, so this is a known-in-advance covariate, not a leak.
+
+    Feature construction, the role vocabulary and the dead-column rule live in
+    data_provider/calendar_events.py.
+    """
+
+    def __init__(self, root_path, flag='train', size=None,
+                 features='S', data_path='realized_volatility.csv',
+                 target='RV', scale=True, timeenc=0, freq='d', asset=None,
+                 event_path='eurusd_calendar_events_2010_2025 (1).csv',
+                 event_vocab='role'):
+        self.event_path = event_path
+        self.event_vocab = event_vocab
+        super().__init__(root_path=root_path, flag=flag, size=size,
+                         features=features, data_path=data_path, target=target,
+                         scale=scale, timeenc=timeenc, freq=freq, asset=asset)
+
+    def __read_data__(self):
+        super().__read_data__()
+
+        frame, count_cols = build_event_frame(
+            os.path.join(self.root_path, self.event_path),
+            vocab=self.event_vocab, verbose=(self.flag == 'train'))
+
+        # Align to the trading days Dataset_RV actually kept -- after its sort
+        # and its non-positive drop -- so event row i and RV row i are the same
+        # day by construction rather than by luck.
+        aligned = align_to_index(frame, self.full_index)
+        values = aligned.values.astype(np.float32)
+        columns = list(aligned.columns)
+
+        # Training rows on the split calendar, NOT this split's own slice: the
+        # scaler and the dead-column rule must read the same window whichever
+        # split is being built, or the three would disagree on the feature set.
+        cal = SPLITS[self.asset]
+        t0, t1 = row_range(self.full_index, *dl_bounds(cal, 'train'))
+        values, columns = drop_dead_columns(
+            values, columns, (t0, t1 + 1), verbose=(self.flag == 'train'))
+
+        # Counts are standardised on those training rows; the evt_* columns stay
+        # raw small integers, which is already the scale an embedding wants.
+        count_idx = [j for j, c in enumerate(columns) if c in set(count_cols)]
+        if count_idx and self.scale:
+            block = values[t0:t1 + 1][:, count_idx]
+            mean = block.mean(axis=0)
+            std = block.std(axis=0)
+            std[std < 1e-8] = 1.0
+            values[:, count_idx] = (values[:, count_idx] - mean) / std
+
+        border1, border2 = self.borders
+        self.event_cols = columns
+        self.n_event_features = len(columns)
+        self.data_events = values[border1:border2]
+
+        # A window whose horizon reaches past the end of the calendar would be
+        # told, falsely, that nothing is scheduled. Warn rather than fail: the
+        # run is still valid, the last few origins are just uninformed.
+        last_event_day = frame.index.max()
+        last_needed = self.dates[-1]
+        if last_needed > last_event_day:
+            n = int((self.dates > last_event_day).sum())
+            print('  WARNING: the calendar stops at {} but the {} split runs to '
+                  '{}; {} row(s) carry an all-zero schedule they did not earn.'
+                  .format(last_event_day.date(), self.flag,
+                          last_needed.date(), n))
+
+    def __getitem__(self, index):
+        seq_x, seq_y, seq_x_mark, seq_y_mark = super().__getitem__(index)
+
+        s_end = index + self.seq_len
+        seq_x_events = self.data_events[index:s_end]
+        # Exactly the h rows the aggregated target averages over: data_y[s_end]
+        # covers rows s_end .. s_end+h-1, and __len__ guarantees they exist.
+        seq_y_events = self.data_events[s_end:s_end + self.horizon]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, seq_x_events, seq_y_events

@@ -2,7 +2,7 @@ import argparse
 import os
 
 import torch
-from data_provider.data_factory import is_aggregated
+from data_provider.data_factory import is_aggregated, EVENT_DATA
 from data_provider.splits import SPLITS, DEFAULT_ASSET
 from exp.exp_ModernTCN import Exp_Main
 import random
@@ -129,7 +129,70 @@ def build_parser():
     parser.add_argument('--use_multi_gpu', action='store_true', help='use multiple gpus', default=False)
     parser.add_argument('--devices', type=str, default='0,1,2,3', help='device ids of multile gpus')
     parser.add_argument('--test_flop', action='store_true', default=False, help='See utils/tools for usage')
+
+    # news events (EventTCN, --data RVEvents)
+    parser.add_argument('--event_data_path', type=str,
+                        default='eurusd_calendar_events_2010_2025 (1).csv',
+                        help='raw macro calendar csv inside --root_path (DateTime, '
+                             'Currency, Impact, Event). Read by '
+                             'data_provider/calendar_events.py')
+    parser.add_argument('--event_vocab', type=str, default='role', choices=['role', 'name'],
+                        help="event vocabulary: 'role' (default) collapses every "
+                             "'FOMC Member <person> Speaks' into one column, every CPI "
+                             "print into another, ~16 live columns; 'name' keeps one "
+                             'column per raw event name, ~90 after the dead ones are '
+                             'dropped. See calendar_events.py for why role is the default')
+    parser.add_argument('--event_dim', type=int, default=8,
+                        help='width of the learned event embedding (keep small)')
+    parser.add_argument('--event_past', type=str2bool, default=True,
+                        help='ablation switch: embed the look-back calendar and feed it '
+                             'into the stem')
+    parser.add_argument('--event_future', type=str2bool, default=True,
+                        help="ablation switch: FiLM-condition the final feature map on "
+                             "the horizon's known event schedule")
+    parser.add_argument('--event_fusion', type=str, default='inject', choices=['inject', 'channel'],
+                        help="how PAST events enter the backbone. 'inject' adds the event "
+                             "feature map onto the stage-0 map; 'channel' carries events as "
+                             'an extra variable through the whole backbone so the '
+                             'cross-variable ConvFFN mixes RV<->events at every stage. '
+                             'Events stay outside RevIN either way, and future events use '
+                             'FiLM in both')
     return parser
+
+
+def resolve_events(args):
+    """
+    Switch the event paths on for an event dataset and measure their width.
+
+    event_in is not a hyperparameter: the number of feature columns falls out of
+    --event_vocab and of which columns survive the never-active-in-training drop,
+    so it is read off the training split rather than guessed. Building that split
+    here costs two CSV reads and removes the one way this can go wrong silently
+    -- a model built for a different number of event columns than the loader
+    hands it.
+    """
+    args.use_events = args.data in EVENT_DATA
+    args.event_in = 0
+    if not args.use_events:
+        return args
+    if not (args.event_past or args.event_future):
+        raise ValueError('--data {} with both --event_past False and --event_future '
+                         'False has no event path left; use --data RV for the '
+                         'unconditioned model.'.format(args.data))
+
+    from data_provider.data_factory import data_dict
+    probe = data_dict[args.data](
+        root_path=args.root_path, flag='train',
+        size=[args.seq_len, args.label_len, args.pred_len],
+        features=args.features, data_path=args.data_path, target=args.target,
+        timeenc=0 if args.embed != 'timeF' else 1, freq=args.freq,
+        asset=args.asset, event_path=args.event_data_path,
+        event_vocab=args.event_vocab)
+    args.event_in = probe.n_event_features
+    print('news events: {} feature column(s), vocab={!r}, past={}, future={}, '
+          'fusion={}'.format(args.event_in, args.event_vocab, args.event_past,
+                             args.event_future, args.event_fusion))
+    return args
 
 
 def finalize_args(args):
@@ -143,6 +206,7 @@ def finalize_args(args):
     # forecasting a pred_len-step path, so out_len == pred_len there.
     args.aggregate = is_aggregated(args)
     args.out_len = 1 if args.aggregate else args.pred_len
+    args = resolve_events(args)
     if args.aggregate and args.label_len != 0:
         # There is no decoder to prime and no h-step path to start: a label window
         # would only pad batch_y with rows nothing reads.
@@ -269,6 +333,14 @@ def main(argv=None):
                 args.small_kernel_merged,
                 args.des,
                 seed)
+            if args.use_events:
+                # events change the model, so they have to change the checkpoint
+                # and results directory too, or a run would silently load or
+                # overwrite its own ablation partner
+                setting += '_ev{}d{}p{:d}f{:d}{}'.format(
+                    args.event_fusion[:3], args.event_dim,
+                    args.event_past, args.event_future,
+                    '' if args.event_vocab == 'role' else args.event_vocab)
 
             exp = Exp(args)  # set experiments
             print('>>>>>>>start training : {} [seed {}, {}/{}]>>>>>>>>>>>>>>'.format(

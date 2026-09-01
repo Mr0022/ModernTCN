@@ -1,4 +1,5 @@
-from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred, Dataset_RV
+from data_provider.data_loader import (Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom,
+                                       Dataset_Pred, Dataset_RV, Dataset_RV_Events)
 from torch.utils.data import DataLoader
 
 data_dict = {
@@ -8,12 +9,20 @@ data_dict = {
     'ETTm2': Dataset_ETT_minute,
     'custom': Dataset_Custom,
     'RV': Dataset_RV,
+    # Same aggregated RV target, plus the macro news-event calendar. --data RV
+    # and --data RVEvents differ only in what the loader hands the model, so a
+    # pair of runs over the two is the clean with/without-events ablation.
+    'RVEvents': Dataset_RV_Events,
 }
 
 # Datasets whose target is an AGGREGATE of the forward window rather than a
 # path: one number per window, so --pred_len is the horizon h and the model head
 # emits a single step (run.py turns this into args.out_len).
-AGG_DATA = ('RV',)
+AGG_DATA = ('RV', 'RVEvents')
+
+# Datasets that additionally carry the news-event calendar. run.py switches the
+# model's event paths on for these and reads the feature width off the loader.
+EVENT_DATA = ('RVEvents',)
 
 
 def is_aggregated(args) -> bool:
@@ -62,6 +71,9 @@ def data_provider(args, flag):
         # Which calendar in data_provider/splits.py to split on. Only the
         # aggregated loaders take it; the others carry their own borders.
         kwargs['asset'] = getattr(args, 'asset', None)
+    if Data is Dataset_RV_Events:
+        kwargs['event_path'] = args.event_data_path
+        kwargs['event_vocab'] = args.event_vocab
     data_set = Data(**kwargs)
     print(flag, len(data_set))
     data_loader = DataLoader(

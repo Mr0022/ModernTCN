@@ -126,6 +126,91 @@ sh ./scripts/RV.sh "1 5 22"     # all three horizons
 python HAR-RV_RUN.PY --data data/realized_volatility.csv --log --asset forex
 ```
 
+**EventTCN (`--data RVEvents`) - conditioning on the macro news calendar.**
+
+`--data RVEvents` is `--data RV` plus the EUR/USD economic calendar in
+`data/eurusd_calendar_events_2010_2025 (1).csv`. Same rows, same splits, same
+aggregated log-of-mean target, same scaler - the two differ *only* in what the
+loader hands the model, so a pair of runs is a clean ablation.
+
+The calendar carries no actual, forecast or previous value, only that an event
+is **scheduled**, with its currency and the vendor's impact rating. That is what
+makes the horizon slice a legitimate future covariate rather than a leak: the
+model learns that an FOMC statement lands inside the window it is forecasting,
+never what the statement said. Two paths, independently switchable:
+
+* **Past events** (`--event_past`). The look-back window's calendar is embedded
+  and patched by its own stem - same geometry as the value stem, separate
+  weights - then either added onto the stage-0 feature map (`--event_fusion
+  inject`) or carried as an extra variable through the whole backbone
+  (`--event_fusion channel`), where ModernTCN's cross-variable ConvFFN mixes
+  RV against events at every stage. It is dropped again before the head.
+* **Future events** (`--event_future`). The horizon's known schedule is pooled
+  into one vector and generates a FiLM `(gamma, beta)` pair over the final
+  feature map: `x * (1 + gamma) + beta`. The generator is zero-initialised, so
+  this path is an **exact identity at step 0** and only moves away from it where
+  that reduces loss.
+
+Neither path touches RevIN. RevIN normalises per window per channel, and the
+event columns are sparse - 23% of trading days carry no scheduled event at all -
+so a window with a constant event column would be divided by `sqrt(eps)`. Keeping
+the event stream outside RevIN entirely is what makes `channel` fusion safe.
+
+**Event features** are built by `data_provider/calendar_events.py`: per-day
+counts (`n_events`, by impact, by currency) plus one column per (currency, event
+key). `--event_vocab` picks what a key is:
+
+* `role` (default) normalises names to roles - every `FOMC Member <person>
+  Speaks` becomes one `cb_member_speech` column, Draghi / Lagarde / Trichet one
+  `cb_chief_speech` column, all CPI prints one `cpi` column. 16 live event
+  columns.
+* `name` keeps one column per raw event name, ~90 after dead ones are dropped.
+
+`role` is the default because officials churn and raw names churn with them.
+Over this calendar **12 event names never occur in the training window yet fire
+213 times in test** - 23.5% of test events - among them Barr, Collins, Cook,
+Goolsbee, Jefferson, Kugler, Logan, Musalem, Schmid and Nagel. A column that is
+identically zero in training receives no gradient at all, so its embedding keeps
+its random initialisation and then injects a fixed random vector whenever it
+fires out of sample. The mirror image is just as wasteful: Draghi (203 training
+rows), Dudley (152) and Weidmann (132) each own a well-trained column that never
+fires again after 2021. Role normalisation maps every dead name onto a column
+with hundreds of training examples; whatever the vocabulary,
+`drop_dead_columns()` then removes anything still identically zero over the
+training rows, so no column can reach test time untrained.
+
+```
+cd ./ModernTCN-Long-term-forecasting
+
+sh ./scripts/RV.sh       "1 5 22"     # unconditioned control
+sh ./scripts/EventTCN.sh "1 5 22"     # conditioned
+
+# dump the aligned feature matrix for inspection or for a HAR-X baseline
+python data_provider/calendar_events.py \
+  --calendar "data/eurusd_calendar_events_2010_2025 (1).csv" \
+  --rv data/realized_volatility.csv --out data/events.csv
+```
+
+`scripts/EventTCN.sh` reuses `RV.sh`'s backbone hyperparameters. That is the
+right *control* - identical backbone, events the only difference - but it is not
+a tuned EventTCN, so until `tune_optuna.py` is re-run over `--data RVEvents` a
+null result means "events do not help this backbone", not "events do not help".
+
+Expect the gain to fall away with the horizon. Over this calendar the forward
+high-impact event count has a coefficient of variation of 0.92 at h=1, 0.50 at
+h=5 and 0.27 at h=22, and no h=22 window is event-free at all: by the monthly
+horizon almost every window looks alike, so there is very little left to
+condition on. A large h=22 gain would be a reason to look for a leak, not to
+celebrate.
+
+Two things this port deliberately leaves for later. The horizon pool is a
+**mean** over the h days, so a release on day 1 and one on day h condition the
+model identically - a sum with learned per-position weights is the obvious next
+experiment, and the likeliest reason h=22 shows nothing. And the honest
+comparator for a gain here is **HAR-X** - HAR-RV with announcement counts as
+extra regressors - not plain HAR-RV; without it a win shows only that the
+calendar is informative, not that FiLM is the right way to use it.
+
 **Hyperparameter search.** `tune_optuna.py` runs Bayesian optimisation with a
 Tree-structured Parzen Estimator (Optuna's `TPESampler`) over the space above,
 scored on the **validation** split - the test window is never read during a
