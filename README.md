@@ -191,6 +191,19 @@ python data_provider/calendar_events.py \
   --rv data/realized_volatility.csv --out data/events.csv
 ```
 
+**Colab.** [`RV_eventtcn_comparison_colab.ipynb`](RV_eventtcn_comparison_colab.ipynb) runs the whole
+comparison over 5 seeds and puts it in one table: HAR-RV, ModernTCN and EventTCN, each neural
+family under **two** hyperparameter sets - this repo's `scripts/RV.sh` values and the FilmTCN
+repo's plain-model Optuna studies - at all three horizons. The two arms within a set differ only
+in whether the model sees the calendar, so each pair isolates the event effect:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Mr0022/ModernTCNt/blob/claude/moderntcn-aggregation-log-ptj8ao/RV_eventtcn_comparison_colab.ipynb)
+
+A note that notebook makes explicit: the hyperparameters `scripts/RV.sh` and the table above
+present as this repo's per-horizon search are in fact the FilmTCN repo's **EventTCN** studies
+(`tuningresults/EVENTTCN{1,5,22}`), matching to seven decimals on the objective and exactly on
+every parameter. They were selected with an event-conditioned model in the loop and are reused
+here for the unconditioned baseline.
+
 `scripts/EventTCN.sh` reuses `RV.sh`'s backbone hyperparameters. That is the
 right *control* - identical backbone, events the only difference - but it is not
 a tuned EventTCN, so until `tune_optuna.py` is re-run over `--data RVEvents` a
