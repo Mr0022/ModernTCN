@@ -1,0 +1,25 @@
+{
+  "horizon": 1,
+  "model": "ModernTCN",
+  "objective": "mse",
+  "objective_unit": "ln",
+  "best_value": 0.2089806188292293,
+  "best_trial": 84,
+  "n_complete": 56,
+  "n_pruned": 44,
+  "params": {
+    "seq_len": 22,
+    "patch_size": 4,
+    "patch_stride": 2,
+    "dim": 128,
+    "ffn_ratio": 2,
+    "large_size": 31,
+    "small_size": 7,
+    "num_blocks": 1,
+    "dropout": 0.32441448044739796,
+    "head_dropout": 0.28219281757104175,
+    "learning_rate": 0.004590097335863004,
+    "batch_size": 128,
+    "revin": 1
+  }
+}
